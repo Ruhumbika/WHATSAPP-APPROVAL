@@ -1,0 +1,24 @@
+{
+  "source_system": "peta",
+  "company": "peta",
+  "request_type": "requisition_approval",
+  "reference_id": "REQ-DOC-10",
+  "step_id": "manager",
+  "workflow_version": "1",
+  "message": "Requisition No. 9: approval requested for maintenance parts.",
+  "amount": 250000,
+  "payload": {
+    "requested_by": "Workshop Manager",
+    "department": "Workshop",
+    "reason": "Replace worn parts",
+    "currency": "TZS",
+    "items": [
+      {
+        "description": "Parts",
+        "quantity": 2
+      }
+    ],
+    "document_media_id": "REPLACE_WITH_META_MEDIA_ID",
+    "document_filename": "Requisition_REQ-DOC-10.pdf"
+  }
+}

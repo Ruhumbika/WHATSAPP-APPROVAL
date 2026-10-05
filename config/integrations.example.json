@@ -1,0 +1,15 @@
+{
+  "systems": {
+    "peta": {
+      "enabled": false,
+      "factory": "peta:build_adapter",
+      "options": {
+        "api_base_url_env": "PETA_API_BASE_URL",
+        "access_token_env": "PETA_ACCESS_TOKEN",
+        "directory_base_url": "https://user-directory.abooderp.com/api/v1",
+        "directory_access_token_env": "USER_DIRECTORY_ACCESS_TOKEN",
+        "local_calling_code": "255"
+      }
+    }
+  }
+}
