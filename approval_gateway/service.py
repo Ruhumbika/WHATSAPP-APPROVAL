@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
+from .notifications import enqueue_notification
 from .config import Settings
 from .db import connection, utc_now
 from .repository import authenticate_client, create_approval_request
@@ -969,6 +970,7 @@ def decide(
                 "message_id": response["message_id"],
             },
         )
+        enqueue_notification(conn, request, "received", now, decision=response["action"])
         return {
             "processed": True,
             "decision": response["action"],

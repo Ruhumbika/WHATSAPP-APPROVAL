@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
+from .notifications import enqueue_notification, process_notifications
 from .config import Settings, load_settings
 from .db import connection, init_db, utc_now
 from .service import (
@@ -582,6 +583,11 @@ def _send_callback(
                 callback["approval_request_id"],
             ),
         )
+        request = dict(conn.execute(
+            "SELECT * FROM approval_requests WHERE id = ?",
+            (callback["approval_request_id"],),
+        ).fetchone())
+        enqueue_notification(conn, request, "result", now)
         audit(
             conn,
             callback["approval_request_id"],
@@ -672,6 +678,7 @@ def run_once(settings: Settings, limit: int = 25) -> dict[str, Any]:
                 break
             callbacks += 1
             _send_callback(settings, callback)
+        process_notifications(settings, client, limit)
         return {"workflow_events": events, "delivery_attempts": deliveries,
                 "callback_attempts": callbacks}
 

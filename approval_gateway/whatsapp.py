@@ -270,7 +270,7 @@ class WhatsAppClient:
 
         return self._message_id(self._post_graph(payload))
 
-    def send_text(self, to_phone_number: str, text: str) -> None:
+    def send_text(self, to_phone_number: str, text: str) -> str:
         # The caller must confirm an open customer-service window.
         phone = normalize_phone(to_phone_number)
         text = _text(text, "text", 4096)
@@ -284,9 +284,9 @@ class WhatsAppClient:
 
         if self.settings.dry_run_whatsapp:
             logger.info("WhatsApp text delivery simulated.")
-            return
+            return "dry-run-text"
 
-        self._message_id(self._post_graph(payload))
+        return self._message_id(self._post_graph(payload))
 
     @staticmethod
     def _message_id(response: dict[str, Any]) -> str:

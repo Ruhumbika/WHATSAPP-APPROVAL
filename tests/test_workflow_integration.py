@@ -17,6 +17,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from approval_gateway.notifications import enqueue_notification, process_notifications
+from approval_gateway.whatsapp import WhatsAppError
 from approval_gateway.config import load_settings
 from approval_gateway.db import connection, init_db
 from approval_gateway.integrations.permissions import IntegrationUnavailable
@@ -199,6 +201,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
 
     def run_worker(self):
         with patch("approval_gateway.worker.WhatsAppClient") as client:
+            client.return_value.send_text.return_value = "wamid.text"
             client.return_value.send_approval_request.return_value = (
                 "wamid.mock"
             )
@@ -306,6 +309,82 @@ class WorkflowIntegrationTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.reply(task)
 
+    def test_opposite_decision_keeps_one_confirmation_and_callback(self):
+        self.trigger()
+        self.run_worker()
+        task = self.task()
+        self.reply(task, action="rejected", text="Reject")
+        self.assertFalse(self.reply(task, action="approved")["processed"])
+        with connection(self.settings) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM callback_attempts").fetchone()[0], 1)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM decision_notifications").fetchone()[0], 1)
+        self.assertEqual(self.task()["status"], "rejected")
+
+    def test_confirmation_retry_does_not_change_decision(self):
+        self.trigger()
+        self.run_worker()
+        self.reply(self.task())
+        client = Mock()
+        client.send_text.side_effect = WhatsAppError("rate limit", http_status=429)
+        process_notifications(self.settings, client, 25)
+        with connection(self.settings) as c:
+            row = c.execute("SELECT * FROM decision_notifications").fetchone()
+            self.assertEqual(row["status"], "pending")
+            self.assertEqual(row["attempts"], 1)
+            c.execute("UPDATE decision_notifications SET next_attempt_at='2000-01-01T00:00:00+00:00'")
+        client.send_text.side_effect = None
+        client.send_text.return_value = "wamid.confirmation"
+        process_notifications(replace(self.settings, dry_run_whatsapp=False), client, 25)
+        process_notifications(self.settings, client, 25)
+        self.assertEqual(client.send_text.call_count, 2)
+        self.assertEqual(self.task()["execution_status"], "pending")
+
+    def test_unknown_confirmation_is_not_resent(self):
+        self.trigger()
+        self.run_worker()
+        self.reply(self.task())
+        client = Mock()
+        client.send_text.side_effect = WhatsAppError("timeout", delivery_unknown=True)
+        process_notifications(self.settings, client, 25)
+        process_notifications(self.settings, client, 25)
+        self.assertEqual(client.send_text.call_count, 1)
+        with connection(self.settings) as c:
+            self.assertEqual(c.execute("SELECT status FROM decision_notifications").fetchone()[0], "unknown")
+
+    def test_expired_confirmation_and_interrupted_send_are_not_sent(self):
+        self.trigger()
+        self.run_worker()
+        self.reply(self.task())
+        client = Mock()
+        with connection(self.settings) as c:
+            c.execute("UPDATE decision_notifications SET expires_at='2000-01-01T00:00:00+00:00'")
+        process_notifications(self.settings, client, 25)
+        client.send_text.assert_not_called()
+        with connection(self.settings) as c:
+            self.assertEqual(c.execute("SELECT status FROM decision_notifications").fetchone()[0], "expired")
+            c.execute("UPDATE decision_notifications SET status='sending'")
+        process_notifications(self.settings, client, 25)
+        client.send_text.assert_not_called()
+        with connection(self.settings) as c:
+            self.assertEqual(c.execute("SELECT status FROM decision_notifications").fetchone()[0], "unknown")
+
+    def test_confirmation_result_is_deduplicated_and_preserves_step_scope(self):
+        self.trigger()
+        self.run_worker()
+        self.reply(self.task())
+        task = self.task()
+        task["execution_status"] = "applied"
+        with connection(self.settings) as c:
+            enqueue_notification(c, task, "result", task["responded_at"])
+            enqueue_notification(c, task, "result", task["responded_at"])
+        client = Mock()
+        client.send_text.return_value = "wamid.confirmation"
+        process_notifications(self.settings, client, 25)
+        self.assertEqual(client.send_text.call_count, 2)
+        self.assertIn("kwa hatua uliyopewa", client.send_text.call_args.args[1])
+        with connection(self.settings) as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM decision_notifications").fetchone()[0], 2)
+
     def test_duplicate_decision_has_one_callback(self):
         self.trigger()
         self.run_worker()
@@ -378,6 +457,9 @@ class WorkflowIntegrationTests(unittest.TestCase):
                 )
             self.run_worker()
             self.assertEqual(self.task()["execution_status"], "applied")
+            with connection(self.settings) as c:
+                notices = c.execute("SELECT kind, status FROM decision_notifications ORDER BY id").fetchall()
+                self.assertEqual([(r["kind"], r["status"]) for r in notices], [("received", "simulated"), ("result", "simulated")])
             self.assertEqual(received[0]["event_id"], received[1]["event_id"])
             self.assertIn("record_snapshot", received[0]["payload"])
         finally:
