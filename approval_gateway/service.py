@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
-from .notifications import enqueue_notification
+from .notifications import enqueue_notification, enqueue_repeat_notification
 from .config import Settings
 from .db import connection, utc_now
 from .repository import authenticate_client, create_approval_request
@@ -889,6 +889,7 @@ def decide(
             (response["message_id"], now),
         )
         if request["status"] != "pending":
+            enqueue_repeat_notification(conn, request, response, now)
             return {"processed": False, "reason": request["status"]}
         callback = _callback_payload(request, response, now)
 

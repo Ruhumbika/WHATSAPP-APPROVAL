@@ -186,5 +186,22 @@ def init_db(settings: Settings) -> None:
             );
             CREATE INDEX IF NOT EXISTS decision_notifications_due
                 ON decision_notifications(status, next_attempt_at);
+            CREATE TABLE IF NOT EXISTS decision_repeat_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                approval_request_id INTEGER NOT NULL REFERENCES approval_requests(id),
+                inbound_message_id TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL CHECK (kind IN ('received', 'result')),
+                phone TEXT NOT NULL,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','sending','sent','simulated','failed','unknown','expired')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                message_id TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             COMMIT;
             """)

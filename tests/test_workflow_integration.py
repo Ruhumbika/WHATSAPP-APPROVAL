@@ -414,6 +414,55 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.assertNotIn("Wrong company", body)
         self.assertIn(f"Company {task['company']}", body)
 
+    def test_opposite_click_reports_applied_action_once(self):
+        self.trigger()
+        self.run_worker()
+        task = self.task()
+        self.reply(task, action="rejected")
+        with connection(self.settings) as c:
+            c.execute("UPDATE approval_requests SET execution_status='applied' WHERE id=?", (task["id"],))
+        message_id = str(uuid4())
+        self.assertFalse(self.reply(task, action="approved", message_id=message_id)["processed"])
+        self.assertFalse(self.reply(task, action="approved", message_id=message_id)["processed"])
+        with connection(self.settings) as c:
+            rows = c.execute("SELECT body FROM decision_repeat_notifications").fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertIn("You cannot approve requisition", rows[0][0])
+            self.assertIn("decision to reject it has already been applied", rows[0][0])
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM callback_attempts").fetchone()[0], 1)
+        client = Mock()
+        client.send_text.return_value = "wamid.notice"
+        process_notifications(self.settings, client, 25)
+        with connection(self.settings) as c:
+            self.assertEqual(c.execute("SELECT status FROM decision_repeat_notifications").fetchone()[0], "simulated")
+        self.assertEqual(self.task()["status"], "rejected")
+
+    def test_opposite_click_reports_processing_without_claiming_success(self):
+        self.trigger()
+        self.run_worker()
+        task = self.task()
+        self.reply(task)
+        self.reply(task, action="rejected")
+        with connection(self.settings) as c:
+            body = c.execute("SELECT body FROM decision_repeat_notifications").fetchone()[0]
+        self.assertIn("You cannot reject", body)
+        self.assertIn("decision to approve", body)
+        self.assertIn("is being processed", body)
+        self.assertNotIn("already been applied", body)
+
+    def test_opposite_click_does_not_claim_rejected_execution_was_applied(self):
+        self.trigger()
+        self.run_worker()
+        task = self.task()
+        self.reply(task)
+        with connection(self.settings) as c:
+            c.execute("UPDATE approval_requests SET execution_status='rejected' WHERE id=?", (task["id"],))
+        self.reply(task, action="rejected")
+        with connection(self.settings) as c:
+            body = c.execute("SELECT body FROM decision_repeat_notifications").fetchone()[0]
+        self.assertIn("It was not applied", body)
+        self.assertNotIn("already been applied", body)
+
     def test_duplicate_decision_has_one_callback(self):
         self.trigger()
         self.run_worker()

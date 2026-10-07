@@ -15,6 +15,24 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5
 
 
+def _company_name(task: dict[str, Any]) -> str:
+    # PETA resolves company_id against companies before storing this snapshot.
+    company = f"Company {task['company']}"
+    try:
+        snapshot = json.loads(task["payload_json"]).get("record_snapshot", {})
+        name = snapshot.get("company_name")
+        if (
+            str(snapshot.get("company_id")) == str(task["company"])
+            and isinstance(name, str)
+            and name.strip()
+            and len(name) <= 200
+        ):
+            company = " ".join(name.split())
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return company
+
+
 def enqueue_notification(
     conn: sqlite3.Connection,
     task: dict[str, Any],
@@ -34,20 +52,7 @@ def enqueue_notification(
     if action not in {"approved", "rejected"}:
         return
     reference = task["source_reference_id"]
-    # PETA resolves company_id against companies before storing this snapshot.
-    company = f"Company {task['company']}"
-    try:
-        snapshot = json.loads(task["payload_json"]).get("record_snapshot", {})
-        name = snapshot.get("company_name")
-        if (
-            str(snapshot.get("company_id")) == str(task["company"])
-            and isinstance(name, str)
-            and name.strip()
-            and len(name) <= 200
-        ):
-            company = " ".join(name.split())
-    except (ValueError, TypeError, AttributeError):
-        pass
+    company = _company_name(task)
     verb = "approve" if action == "approved" else "reject"
     if kind == "received":
         body = f"{company}\nYour decision to {verb} requisition {reference} has been received. Processing is underway."
@@ -69,24 +74,53 @@ def enqueue_notification(
     """, (task["id"], kind, task["actor_phone"], body, now, expires, now, now))
 
 
+def enqueue_repeat_notification(conn, task, response, now):
+    if task["status"] not in {"approved", "rejected"}:
+        return
+    company = _company_name(task)
+    first = "approve" if task["status"] == "approved" else "reject"
+    attempted = "approve" if response["action"] == "approved" else "reject"
+    prefix = f"{company}\nYou cannot {attempted} requisition {task['source_reference_id']}"
+    if task["execution_status"] == "applied":
+        body = f"{prefix} because your decision to {first} it has already been applied at your assigned approval step."
+    elif task["execution_status"] == "pending":
+        body = f"{prefix} because your decision to {first} it has already been recorded and is being processed."
+    else:
+        body = f"{prefix} because your decision to {first} it has already been recorded. It was not applied; please review the requisition in {company}."
+    expires = (datetime.fromisoformat(now) + timedelta(hours=23, minutes=55)).isoformat()
+    conn.execute("""INSERT INTO decision_repeat_notifications
+        (approval_request_id, inbound_message_id, kind, phone, body,
+         next_attempt_at, expires_at, created_at, updated_at)
+        VALUES (?, ?, 'received', ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(inbound_message_id) DO NOTHING""",
+        (task["id"], response["message_id"], task["actor_phone"], body, now, expires, now, now))
+
+
 def process_notifications(settings: Settings, client: WhatsAppClient, limit: int) -> None:
     # Called only under the existing exclusive worker lock.
+    for table in ("decision_notifications", "decision_repeat_notifications"):
+        _process_queue(settings, client, limit, table)
+
+
+def _process_queue(settings, client, limit, table):
+    if table not in {"decision_notifications", "decision_repeat_notifications"}:
+        raise ValueError("Invalid notification table")
     with connection(settings) as conn:
-        conn.execute("""UPDATE decision_notifications
+        conn.execute(f"""UPDATE {table}
             SET status='unknown', last_error='Interrupted send; acceptance requires review.', updated_at=?
             WHERE status='sending'""", (utc_now(),))
     for _ in range(limit):
         with connection(settings) as conn:
             conn.execute("BEGIN IMMEDIATE")
             now = utc_now()
-            conn.execute("""UPDATE decision_notifications
+            conn.execute(f"""UPDATE {table}
                 SET status='expired', updated_at=?
                 WHERE status='pending' AND expires_at<=?""", (now, now))
-            row = conn.execute("""
-                SELECT n.* FROM decision_notifications n
+            row = conn.execute(f"""
+                SELECT n.* FROM {table} n
                 WHERE n.status='pending' AND n.next_attempt_at<=?
                   AND (n.kind='received' OR NOT EXISTS (
-                      SELECT 1 FROM decision_notifications first
+                      SELECT 1 FROM {table} first
                       WHERE first.approval_request_id=n.approval_request_id
                         AND first.kind='received' AND first.status IN ('pending','sending')
                   ))
@@ -96,7 +130,7 @@ def process_notifications(settings: Settings, client: WhatsAppClient, limit: int
                 return
             notification = dict(row)
             attempts = notification["attempts"] + 1
-            conn.execute("""UPDATE decision_notifications
+            conn.execute(f"""UPDATE {table}
                 SET status='sending', attempts=?, updated_at=? WHERE id=?""",
                 (attempts, now, notification["id"]))
         status, message_id, error = "sent", None, None
@@ -122,7 +156,7 @@ def process_notifications(settings: Settings, client: WhatsAppClient, limit: int
             logger.error("Decision confirmation send failed.")
         next_at = (datetime.fromisoformat(utc_now()) + timedelta(seconds=min(600, 30 * 2 ** (attempts - 1)))).isoformat()
         with connection(settings) as conn:
-            conn.execute("""UPDATE decision_notifications
+            conn.execute(f"""UPDATE {table}
                 SET status=?, message_id=?, last_error=?, next_attempt_at=?, updated_at=?
                 WHERE id=? AND status='sending'""",
                 (status, message_id, error, next_at, utc_now(), notification["id"]))
