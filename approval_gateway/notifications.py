@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import json
 import logging
 import sqlite3
 from typing import Any
@@ -33,15 +34,28 @@ def enqueue_notification(
     if action not in {"approved", "rejected"}:
         return
     reference = task["source_reference_id"]
-    verb = "kukubali" if action == "approved" else "kukataa"
+    # PETA resolves company_id against companies before storing this snapshot.
+    company = f"Company {task['company']}"
+    try:
+        snapshot = json.loads(task["payload_json"]).get("record_snapshot", {})
+        name = snapshot.get("company_name")
+        if (
+            str(snapshot.get("company_id")) == str(task["company"])
+            and isinstance(name, str)
+            and name.strip()
+            and len(name) <= 200
+        ):
+            company = " ".join(name.split())
+    except (ValueError, TypeError, AttributeError):
+        pass
+    verb = "approve" if action == "approved" else "reject"
     if kind == "received":
-        body = f"Jibu lako la {verb} requisition {reference} limepokelewa. Utekelezaji kwenye ERP unaendelea."
+        body = f"{company}\nYour decision to {verb} requisition {reference} has been received. Processing is underway."
     elif kind == "result":
         if task["execution_status"] == "applied":
-            outcome = "limekubaliwa" if action == "approved" else "limekataliwa"
-            body = f"Ombi {reference} {outcome} kwenye ERP kwa hatua uliyopewa. Jibu lako limetekelezwa."
+            body = f"{company}\nYour decision to {verb} requisition {reference} has been successfully applied at your assigned approval step."
         elif task["execution_status"] == "rejected":
-            body = f"Jibu lako la requisition {reference} halijatekelezwa kwenye ERP. Workflow haikukubali action hii. Tafadhali kagua ombi kwenye ERP."
+            body = f"{company}\nYour decision for requisition {reference} was not applied because the workflow did not accept this action. Please review the requisition in {company}."
         else:
             return
     else:

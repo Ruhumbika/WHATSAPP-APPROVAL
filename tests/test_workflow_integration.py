@@ -381,9 +381,38 @@ class WorkflowIntegrationTests(unittest.TestCase):
         client.send_text.return_value = "wamid.confirmation"
         process_notifications(self.settings, client, 25)
         self.assertEqual(client.send_text.call_count, 2)
-        self.assertIn("kwa hatua uliyopewa", client.send_text.call_args.args[1])
+        self.assertIn("at your assigned approval step", client.send_text.call_args.args[1])
         with connection(self.settings) as c:
             self.assertEqual(c.execute("SELECT COUNT(*) FROM decision_notifications").fetchone()[0], 2)
+
+    def test_confirmation_uses_company_name_from_matching_snapshot(self):
+        self.trigger()
+        self.run_worker()
+        task = self.task()
+        task["payload_json"] = json.dumps({"record_snapshot": {
+            "company_id": task["company"], "company_name": "PETA HOLDINGS (T) LTD"
+        }})
+        from approval_gateway.db import utc_now
+        with connection(self.settings) as c:
+            enqueue_notification(c, task, "received", utc_now(), decision="rejected")
+            body = c.execute("SELECT body FROM decision_notifications").fetchone()[0]
+        self.assertIn("PETA HOLDINGS (T) LTD", body)
+        self.assertIn("Your decision to reject requisition", body)
+        self.assertNotIn("ERP", body)
+
+    def test_confirmation_does_not_use_another_company_name(self):
+        self.trigger()
+        self.run_worker()
+        task = self.task()
+        task["payload_json"] = json.dumps({"record_snapshot": {
+            "company_id": "different-company", "company_name": "Wrong company"
+        }})
+        from approval_gateway.db import utc_now
+        with connection(self.settings) as c:
+            enqueue_notification(c, task, "received", utc_now(), decision="approved")
+            body = c.execute("SELECT body FROM decision_notifications").fetchone()[0]
+        self.assertNotIn("Wrong company", body)
+        self.assertIn(f"Company {task['company']}", body)
 
     def test_duplicate_decision_has_one_callback(self):
         self.trigger()
