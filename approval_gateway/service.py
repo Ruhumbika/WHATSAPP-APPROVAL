@@ -611,10 +611,68 @@ def process_workflow_event(
             (system,),
         ).fetchone():
             raise ServiceError("Source system disabled.", 403)
+            # Persist all current assignments before reconciling previous tasks.
         created = 0
         for data, actor in prepared:
             _, is_new = _persist_task(conn, settings, system, data, actor)
             created += int(is_new)
+
+        current_scopes = {
+            (
+                data["company"],
+                data["actor_directory_uuid"],
+                data["step_id"],
+                data["workflow_version"],
+            )
+            for data, _ in prepared
+        }
+
+        pending_tasks = conn.execute(
+            """
+            SELECT id, company, actor_directory_uuid,
+              step_id, workflow_version
+            FROM approval_requests
+            WHERE source_system = ?
+              AND request_type = ?
+              AND source_reference_id = ?
+              AND status = 'pending'
+            """,
+            (
+                system,
+                event["request_type"],
+                event["reference_id"],
+            ),
+        ).fetchall()
+
+        # Cancel assignments absent from the verified current ERP workflow.
+        now = utc_now()
+        for task in pending_tasks:
+            scope = (
+                task["company"],
+                task["actor_directory_uuid"],
+                task["step_id"],
+                task["workflow_version"],
+            )
+            if scope in current_scopes:
+                continue
+
+            conn.execute(
+                """
+                UPDATE approval_requests
+                SET status = 'cancelled', updated_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (now, task["id"]),
+            )
+            audit(
+                conn,
+                task["id"],
+                "cancelled",
+                {
+                    "reason": "ERP workflow assignment is no longer current.",
+                    "workflow_event_id": event["event_id"],
+                },
+            )
         conn.execute(
             """UPDATE workflow_events
                SET status = 'completed', last_error = NULL, updated_at = ?

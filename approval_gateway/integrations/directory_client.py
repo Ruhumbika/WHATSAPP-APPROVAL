@@ -11,7 +11,8 @@ from uuid import UUID
 
 from .permissions import DirectoryUser, IntegrationUnavailable
 
-MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+# Bound large permission responses before decoding JSON.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 # Reject redirects so the Directory token stays on the configured endpoint.
@@ -120,8 +121,11 @@ class UserDirectoryClient:
                 if response.status != 200:
                     raise ValueError("Unexpected HTTP status")
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw) > MAX_RESPONSE_BYTES:
-                raise ValueError("Directory response exceeds the size limit")
+                if len(raw) > MAX_RESPONSE_BYTES:
+                    raise ValueError(
+                        f"Directory response exceeds "
+                        f"{MAX_RESPONSE_BYTES // (1024 * 1024)} MiB"
+                    )
             payload = json.loads(
                 raw.decode("utf-8"),
                 object_pairs_hook=_unique_object,

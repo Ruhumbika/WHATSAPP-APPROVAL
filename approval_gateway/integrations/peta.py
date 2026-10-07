@@ -7,10 +7,14 @@ import json
 import re
 import urllib.error
 import urllib.request
+import tempfile
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Mapping
 from uuid import UUID
 from urllib.parse import urlsplit
+from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from .directory_client import (
     MAX_RESPONSE_BYTES,
@@ -58,6 +62,7 @@ class PetaClient:
         *,
         allow_local_http: bool = False,
         timeout_seconds: int = 10,
+        document_access_token: str = "",
     ) -> None:
         url = urlsplit(base_url)
         url.port
@@ -85,6 +90,12 @@ class PetaClient:
         if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 60:
             raise ValueError("PETA timeout must be between 1 and 60 seconds")
         self.base_url = base_url.rstrip("/")
+        if not isinstance(document_access_token, str) or any(
+            ord(char) < 33 or ord(char) == 127
+            for char in document_access_token
+        ):
+            raise ValueError("Invalid PETA document access token")
+        self.document_access_token = document_access_token
         self.access_token = access_token
         self.timeout_seconds = timeout_seconds
         self.opener = urllib.request.build_opener(_RejectRedirects())
@@ -165,6 +176,41 @@ class PetaClient:
         except (ValueError, TypeError, KeyError) as exc:
             raise IntegrationUnavailable(
                 "Invalid PETA requisition details"
+            ) from exc
+
+    def get_document(self, requisition_id: int) -> bytes:
+        # Fetch only the dedicated read-only PDF route; never call the print action.
+        requisition_id = _positive_id(requisition_id)
+        if len(self.document_access_token) < 32:
+            raise WorkflowDenied(
+                "PETA document integration credential is missing"
+            )
+        request = urllib.request.Request(
+            f"{self.base_url}/whatsapp-approvals/requisitions/{requisition_id}/document",
+            headers={
+                "Accept": "application/pdf",
+                "Authorization": f"Bearer {self.document_access_token}",
+            },
+        )
+        try:
+            with self.opener.open(
+                request, timeout=self.timeout_seconds
+            ) as response:
+                if (
+                    response.status != 200
+                    or response.headers.get_content_type() != "application/pdf"
+                ):
+                    raise ValueError("Expected a PDF response")
+                content = response.read(20 * 1024 * 1024 + 1)
+            if (
+                not content.startswith(b"%PDF-")
+                or len(content) > 20 * 1024 * 1024
+            ):
+                raise ValueError("Invalid PDF content or size")
+            return content
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise IntegrationUnavailable(
+                "PETA approval document is unavailable"
             ) from exc
 
     def get_pending_step(self, requisition_id: int) -> PendingStep | None:
@@ -329,6 +375,124 @@ def resolve_recipients(
     return step, recipients
 
 
+def _detailed_message_fields(record: Mapping[str, Any]) -> dict[str, str]:
+    # Format display fields without modifying the signed ERP snapshot.
+    def text(value: Any, fallback: str = "Not provided") -> str:
+        if value is None:
+            return fallback
+        cleaned = " ".join(str(value).split())
+        return cleaned or fallback
+
+    def display_date(value: Any) -> str:
+        if not value:
+            return "Not provided"
+        try:
+            return date.fromisoformat(str(value)).strftime("%d %b %Y")
+        except ValueError:
+            raise IntegrationUnavailable("Invalid PETA request date") from None
+
+    def number(value: Any) -> Decimal:
+        if value is None or isinstance(value, bool):
+            raise IntegrationUnavailable("PETA amount is missing or invalid")
+        try:
+            result = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            raise IntegrationUnavailable("Invalid PETA amount") from None
+        if not result.is_finite():
+            raise IntegrationUnavailable("Invalid PETA amount")
+        return result
+
+    company_name = record.get("company_name")
+    if not isinstance(company_name, str) or not company_name.strip():
+        raise IntegrationUnavailable("PETA company name is missing")
+
+    items = record.get("items")
+    sources = record.get("sources", [])
+    if not isinstance(items, list) or not items:
+        raise IntegrationUnavailable("PETA request has no items")
+    if not isinstance(sources, list):
+        raise IntegrationUnavailable("Invalid PETA payment sources")
+
+    # Keep currencies separate and use totals supplied by the ERP.
+    totals: dict[str, list[Decimal]] = {}
+    summaries: list[str] = []
+    for item in items:
+        currency = text(item.get("currency"), "")
+        if not currency:
+            raise IntegrationUnavailable("PETA item currency is missing")
+
+        amounts = totals.setdefault(
+            currency, [Decimal("0"), Decimal("0"), Decimal("0")]
+        )
+        for index, field in enumerate(
+            ("amount_before_vat", "vat_amount", "total_amount")
+        ):
+            amounts[index] += number(item.get(field))
+
+        for material in item.get("materials", []):
+            quantity = number(material.get("quantity"))
+            rate = number(material.get("rate"))
+            summaries.append(
+                f"{text(material.get('item_name'))}: "
+                f"{quantity:,.2f} {text(material.get('unit'))} "
+                f"× {text(material.get('currency'), currency)} {rate:,.2f}"
+            )
+
+        for account in item.get("accounts", []):
+            summaries.append(
+                f"{text(account.get('account_name'))}: "
+                f"{text(account.get('currency'), currency)} "
+                f"{number(account.get('amount')):,.2f}"
+            )
+
+    def amount_display(index: int) -> str:
+        return "; ".join(
+            f"{currency} {amounts[index]:,.2f}"
+            for currency, amounts in sorted(totals.items())
+        )
+
+    def source_display(field: str) -> str:
+        values = dict.fromkeys(
+            text(source.get(field), "")
+            for source in sources
+            if source.get(field)
+        )
+        return "; ".join(value for value in values if value) or "Not provided"
+
+    # Summarize lengthy requests explicitly; the PDF retains all item details.
+    item_summary = "; ".join(summaries[:3]) or "See attached PDF"
+    if len(summaries) > 3:
+        item_summary += f"; +{len(summaries) - 3} more entries in PDF"
+    if len(item_summary) > 260:
+        item_summary = (
+            item_summary[:220].rstrip()
+            + "… Full item details in attached PDF."
+        )
+
+    reason = text(record.get("remarks"))
+    if len(reason) > 180:
+        reason = reason[:140].rstrip() + "… Full reason in attached PDF."
+
+    return {
+        "company_name": text(company_name),
+        "reference_id": str(record["id"]),
+        "request_title": text(record.get("requisition_type")),
+        "requested_by": text(record.get("requested_by")),
+        "created_by": text(record.get("created_by")),
+        "cost_center": text(record.get("cost_center")),
+        "request_date": display_date(record.get("date")),
+        "required_date": display_date(record.get("required_date")),
+        "fund_direction": text(record.get("fund_direction")),
+        "item_summary": item_summary,
+        "subtotal_display": amount_display(0),
+        "vat_display": amount_display(1),
+        "total_display": amount_display(2),
+        "payee_display": source_display("payee_name"),
+        "payment_method": source_display("mode_of_payment"),
+        "reason": reason,
+    }
+
+
 class PetaWorkflowGuard:
     def __init__(
         self,
@@ -445,6 +609,52 @@ class PetaWorkflowGuard:
             ) from exc
         return hashlib.sha256(raw).hexdigest()
 
+    def prepare_delivery(
+        self, settings, request: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        # Prepare ERP-specific presentation and PDF media inside the adapter.
+        details = json.loads(request["payload_json"])
+
+        if (
+            settings.whatsapp_template_name
+            == "workflow_approval_detail_document_v2"
+        ):
+            snapshot = details.get("record_snapshot")
+            if not isinstance(snapshot, dict):
+                raise IntegrationUnavailable("PETA record snapshot is missing")
+            details.update(_detailed_message_fields(snapshot))
+
+        if settings.whatsapp_template_name not in {
+            "workflow_approval_document",
+            "requisition_approval_document",
+            "workflow_approval_detail_document_v2",
+        }:
+            return details
+        reference = request["source_reference_id"]
+        if details.get("document_media_id"):
+            return details
+        if settings.dry_run_whatsapp:
+            # A simulated ID satisfies local template validation without uploading a file.
+            media_id = "1"
+        else:
+            from ..upload_document import upload_pdf
+
+            content = self.peta.get_document(int(reference))
+            with tempfile.TemporaryDirectory(
+                prefix="approval-pdf-"
+            ) as directory:
+                path = Path(directory) / f"requisition-{reference}.pdf"
+                path.write_bytes(content)
+                try:
+                    media_id = str(upload_pdf(settings, path))
+                except RuntimeError as exc:
+                    raise IntegrationUnavailable(
+                        "Approval PDF upload failed"
+                    ) from exc
+        details["document_media_id"] = media_id
+        details["document_filename"] = f"requisition-{reference}.pdf"
+        return details
+
     def resolve_workflow_event(
         self, event: Mapping[str, object]
     ) -> tuple[dict[str, Any], ...]:
@@ -501,9 +711,17 @@ class PetaWorkflowGuard:
                         "reference_id": reference,
                         "workflow_step": f"{step.action_name} — {step.position_name}",
                         "requested_by": record.get("requested_by")
-                        or record.get("created_by"),
-                        "details": record.get("remarks"),
+                        or record.get("created_by")
+                        or "Not provided",
+                        "details": record.get("remarks")
+                        or record.get("requisition_type")
+                        or "Review attached requisition",
                         "decision_scope": "Current approval-chain level",
+                        "record_snapshot": {
+                            key: value
+                            for key, value in record.items()
+                            if key != "approval"
+                        },
                         "items": record["items"],
                         "sources": record.get("sources", []),
                     },
@@ -530,7 +748,7 @@ def build_adapter(
         "local_calling_code",
     }
     if set(options) - (
-        required | {"allow_local_http"}
+        required | {"allow_local_http", "document_access_token_env"}
     ) or not required.issubset(options):
         raise ValueError("Invalid PETA adapter options")
 
@@ -559,11 +777,21 @@ def build_adapter(
     allow_http = options.get("allow_local_http", False)
     if type(allow_http) is not bool:
         raise ValueError("allow_local_http must be boolean")
+    document_token_name = options.get("document_access_token_env")
+    if document_token_name is not None and (
+        not isinstance(document_token_name, str)
+        or not document_token_name.isidentifier()
+    ):
+        raise ValueError("Invalid PETA document credential reference")
+    document_token = (
+        environment.get(document_token_name, "") if document_token_name else ""
+    )
     return PetaWorkflowGuard(
         peta=PetaClient(
             credential(options["api_base_url_env"]),
             token,
             allow_local_http=allow_http,
+            document_access_token=document_token,
         ),
         directory=PetaDirectoryClient(
             base_url=directory_url,

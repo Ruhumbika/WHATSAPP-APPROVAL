@@ -171,6 +171,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def _receive_webhook(self) -> None:
         settings = self.settings
+
+        logger.info("WhatsApp webhook received.")
+
         if (
             not settings.meta_app_secret.strip()
             or re.fullmatch(
@@ -179,35 +182,61 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
             is None
         ):
+            logger.error("WhatsApp webhook configuration invalid; HTTP 503.")
             raise ServiceError("Webhook processing is not configured.", 503)
+
         raw_body = self.body()
 
-        # Verify the original bytes before decoding or processing the event.
+        # Authenticate the original request before parsing its contents.
         if not verify_meta_signature(
             raw_body,
             self._header("X-Hub-Signature-256"),
             settings.meta_app_secret,
         ):
+            logger.warning("WhatsApp signature rejected; HTTP 403.")
             raise ServiceError("Invalid Meta signature.", 403)
-        payload = self.parse_json(raw_body)
-        results = []
-        for response in extract_responses(
-            payload,
-            expected_phone_number_id=settings.whatsapp_phone_number_id,
-        ):
-            try:
-                results.append(decide(settings, response))
-            except ServiceError as exc:
 
-                # Business rejection is acknowledged; transient failures are retried.
+        payload = self.parse_json(raw_body)
+        responses = list(
+            extract_responses(
+                payload,
+                expected_phone_number_id=settings.whatsapp_phone_number_id,
+            )
+        )
+        logger.info(
+            "WhatsApp signature verified; extracted decisions=%d.",
+            len(responses),
+        )
+
+        results = []
+        for response in responses:
+            try:
+                result = decide(settings, response)
+                results.append(result)
+                logger.info(
+                    "WhatsApp decision processed=%s; reason=%s.",
+                    result.get("processed"),
+                    result.get("reason", ""),
+                )
+            except ServiceError as exc:
+                logger.warning(
+                    "WhatsApp decision rejected; service status=%s; reason=%s.",
+                    exc.status,
+                    str(exc),
+                )
+
+                # Preserve provider retries for transient integration failures.
                 if exc.status >= 500:
                     raise
+
                 results.append(
                     {
                         "processed": False,
                         "reason": str(exc),
                     }
                 )
+
+        logger.info("WhatsApp webhook acknowledged; HTTP 200.")
         self.reply({"ok": True, "results": results})
 
     def _dispatch(self, method: str) -> None:

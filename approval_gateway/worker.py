@@ -1,8 +1,7 @@
 """Process queued deliveries and callbacks without holding network transactions."""
-
 from __future__ import annotations
-
 import fcntl
+import argparse
 import hashlib
 import hmac
 import json
@@ -15,15 +14,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlsplit
-
 from .config import Settings, load_settings
 from .db import connection, init_db, utc_now
-from .service import ServiceError, _check_actor, _expired, audit
+from .service import (
+    ServiceError, _check_actor, _expired, audit,
+    process_workflow_event, verify_delivery_workflow,
+)
+from .workflow_events import init_workflow_events
+from .integrations.bootstrap import bootstrap_integrations
+from .integrations.registry import get_workflow_guard
+from .integrations.permissions import IntegrationUnavailable, WorkflowDenied
 from .upgrade import migrate
 from .whatsapp import WhatsAppClient, WhatsAppError
-
 logger = logging.getLogger(__name__)
-
 MAX_ATTEMPTS = 8
 MAX_CALLBACK_RESPONSE_BYTES = 65_536
 
@@ -35,7 +38,9 @@ class CallbackError(RuntimeError):
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+
     # Callback secrets must never be forwarded to redirected endpoints.
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
@@ -49,6 +54,7 @@ def later(seconds: int) -> str:
 
 
 def _retry_at(attempts: int) -> str:
+
     # Increase delay from 30 seconds to a maximum of one hour.
     delay = min(3600, 30 * 2 ** min(max(attempts - 1, 0), 7))
     return later(delay)
@@ -56,17 +62,16 @@ def _retry_at(attempts: int) -> str:
 
 @contextmanager
 def _worker_lock(settings: Settings) -> Iterator[bool]:
+
     # Serialize cooperating workers on the same Linux host.
     lock_path = Path(settings.database_path + ".worker.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-
     with lock_path.open("a") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             yield False
             return
-
         try:
             yield True
         finally:
@@ -83,7 +88,6 @@ def _recover_interrupted_work(settings: Settings) -> None:
             FROM approval_requests
             WHERE delivery_status = 'sending'
             """).fetchall()
-
         for row in interrupted:
             conn.execute(
                 """
@@ -101,6 +105,14 @@ def _recover_interrupted_work(settings: Settings) -> None:
                 ),
             )
             audit(conn, row["id"], "delivery_unknown", {})
+
+        # Event task creation is atomic; a recovered trigger can be resolved again.
+        conn.execute(
+            """UPDATE workflow_events
+               SET status = 'pending', next_attempt_at = ?, updated_at = ?
+               WHERE status = 'processing'""",
+            (utc_now(), utc_now()),
+        )
 
         # Callback retries are safe only when the ERP deduplicates event_id.
         conn.execute(
@@ -131,7 +143,6 @@ def _claim_delivery(settings: Settings) -> dict[str, Any] | None:
             """,
             (now,),
         ).fetchall()
-
         for row in expired:
             conn.execute(
                 """
@@ -142,7 +153,6 @@ def _claim_delivery(settings: Settings) -> dict[str, Any] | None:
                 (now, row["id"]),
             )
             audit(conn, row["id"], "expired", {})
-
         row = conn.execute(
             """
             SELECT *
@@ -155,10 +165,8 @@ def _claim_delivery(settings: Settings) -> dict[str, Any] | None:
             """,
             (now,),
         ).fetchone()
-
         if row is None:
             return None
-
         request = dict(row)
         attempts = request["delivery_attempts"] + 1
 
@@ -174,7 +182,6 @@ def _claim_delivery(settings: Settings) -> dict[str, Any] | None:
             """,
             (attempts, now, request["id"]),
         )
-
         request["delivery_attempts"] = attempts
         return request
 
@@ -185,23 +192,18 @@ def _prepare_delivery(
 ) -> dict[str, Any]:
     with connection(settings) as conn:
         conn.execute("BEGIN IMMEDIATE")
-
         row = conn.execute(
             "SELECT * FROM approval_requests WHERE id = ?",
             (request_id,),
         ).fetchone()
-
         if row is None:
             raise ServiceError("Task is missing.", 404)
-
         request = dict(row)
-
         if (
             request["status"] != "pending"
             or request["delivery_status"] != "sending"
         ):
             raise ServiceError("Task is no longer eligible for delivery.", 409)
-
         if _expired(request["expires_at"]):
             conn.execute(
                 """
@@ -219,7 +221,7 @@ def _prepare_delivery(
     # Raise after committing the expiry update.
     if request["status"] == "expired":
         raise ServiceError("Task expired.", 409)
-
+    verify_delivery_workflow(settings, request)
     return request
 
 
@@ -236,10 +238,8 @@ def _finish_delivery(
         if status == "pending"
         else None
     )
-
     with connection(settings) as conn:
         conn.execute("BEGIN IMMEDIATE")
-
         cursor = conn.execute(
             """
             UPDATE approval_requests
@@ -259,10 +259,8 @@ def _finish_delivery(
                 request["id"],
             ),
         )
-
         if cursor.rowcount != 1:
             raise RuntimeError("Delivery claim was lost.")
-
         audit(
             conn,
             request["id"],
@@ -278,19 +276,35 @@ def _send_delivery(
 ) -> None:
     try:
         request = _prepare_delivery(settings, claimed["id"])
-
         if request["delivery_attempts"] > MAX_ATTEMPTS:
             raise ValueError("Delivery attempt limit reached.")
+        adapter = get_workflow_guard(request["source_system"])
+        preparer = getattr(adapter, "prepare_delivery", None)
+        details = preparer(settings, request) if callable(preparer) else json.loads(request["payload_json"])
 
-        details = json.loads(request["payload_json"])
-
+        # Recheck after document I/O; no message is sent for a changed ERP snapshot.
+        verify_delivery_workflow(settings, request)
         if not isinstance(details, dict):
             raise ValueError("Stored payload is not an object.")
 
         # Reference is authoritative; display fields must come from the snapshot.
         details["reference_id"] = request["source_reference_id"]
-
-    except (ServiceError, ValueError):
+    except IntegrationUnavailable:
+        retry = claimed["delivery_attempts"] < MAX_ATTEMPTS
+        _finish_delivery(settings, claimed, "pending" if retry else "failed",
+                         error="Integration delivery preparation is unavailable.")
+        return
+    except WorkflowDenied:
+        _finish_delivery(settings, claimed, "blocked", error="Integration delivery preparation was denied.")
+        return
+    except ServiceError as exc:
+        retry = exc.status >= 500 and claimed["delivery_attempts"] < MAX_ATTEMPTS
+        _finish_delivery(
+            settings, claimed, "pending" if retry else "blocked",
+            error="Workflow verification unavailable." if retry else "Task no longer eligible for delivery.",
+        )
+        return
+    except ValueError:
         _finish_delivery(
             settings,
             claimed,
@@ -298,7 +312,6 @@ def _send_delivery(
             error="Task or template data failed delivery preparation.",
         )
         return
-
     try:
         message_id = client.send_approval_request(
             request["actor_phone"],
@@ -315,7 +328,6 @@ def _send_delivery(
             error="Recipient or template parameters are invalid.",
         )
         return
-
     except WhatsAppError as exc:
         if exc.delivery_unknown:
             status = "unknown"
@@ -326,7 +338,6 @@ def _send_delivery(
             status = "pending"
         else:
             status = "failed"
-
         _finish_delivery(
             settings,
             claimed,
@@ -337,8 +348,8 @@ def _send_delivery(
             ),
         )
         return
-
     except Exception:
+
         # Unexpected failures after entering the send path require review.
         _finish_delivery(
             settings,
@@ -348,7 +359,6 @@ def _send_delivery(
         )
         logger.error("WhatsApp send encountered an unexpected failure.")
         return
-
     _finish_delivery(
         settings,
         claimed,
@@ -383,13 +393,10 @@ def _claim_callback(settings: Settings) -> dict[str, Any] | None:
             """,
             (utc_now(),),
         ).fetchone()
-
         if row is None:
             return None
-
         callback = dict(row)
         callback["attempts"] += 1
-
         conn.execute(
             """
             UPDATE callback_attempts
@@ -400,7 +407,6 @@ def _claim_callback(settings: Settings) -> dict[str, Any] | None:
             """,
             (callback["attempts"], utc_now(), callback["id"]),
         )
-
         return callback
 
 
@@ -410,28 +416,21 @@ def _post_callback(
 ) -> dict[str, Any]:
     if callback["attempts"] > MAX_ATTEMPTS:
         raise CallbackError("Callback attempt limit reached.")
-
     if callback["client_active"] != 1:
         raise CallbackError("Source system is disabled.")
-
     secret = callback["callback_secret"]
-
     if not isinstance(secret, str) or len(secret) < 32:
         raise CallbackError("Integration callback secret is invalid.")
-
     if callback["callback_url"] != callback["registered_callback_url"]:
         raise CallbackError("Registered callback URL has changed.")
-
     try:
         url = urlsplit(callback["callback_url"])
         url.port
-
         local_http = (
             settings.app_env in {"local", "testing"}
             and url.scheme == "http"
             and url.hostname in {"127.0.0.1", "localhost", "::1"}
         )
-
         if (
             (url.scheme != "https" and not local_http)
             or not url.hostname
@@ -442,16 +441,12 @@ def _post_callback(
             raise ValueError()
     except ValueError:
         raise CallbackError("Callback URL is invalid.") from None
-
     body = callback["payload_json"].encode("utf-8")
-
     try:
         event = json.loads(body)
     except ValueError:
         raise CallbackError("Stored callback JSON is invalid.") from None
-
     event_id = event.get("event_id") if isinstance(event, dict) else None
-
     if (
         not isinstance(event_id, str)
         or not event_id
@@ -467,7 +462,6 @@ def _post_callback(
         timestamp.encode("ascii") + b"." + body,
         hashlib.sha256,
     ).hexdigest()
-
     request = urllib.request.Request(
         callback["callback_url"],
         data=body,
@@ -480,9 +474,7 @@ def _post_callback(
             "Idempotency-Key": event_id,
         },
     )
-
     opener = urllib.request.build_opener(_RejectRedirects())
-
     try:
         with opener.open(
             request,
@@ -493,9 +485,7 @@ def _post_callback(
                     "Callback must return HTTP 200.",
                     retryable=True,
                 )
-
             raw = response.read(MAX_CALLBACK_RESPONSE_BYTES + 1)
-
     except urllib.error.HTTPError as exc:
         status = exc.code
         exc.close()
@@ -503,16 +493,13 @@ def _post_callback(
             f"Callback returned HTTP {status}.",
             retryable=status == 429 or status >= 500,
         ) from None
-
     except (urllib.error.URLError, TimeoutError, OSError):
         raise CallbackError(
             "Callback connection failed.",
             retryable=True,
         ) from None
-
     if len(raw) > MAX_CALLBACK_RESPONSE_BYTES:
         raise CallbackError("Callback response is too large.", retryable=True)
-
     try:
         reply = json.loads(raw)
     except ValueError:
@@ -520,7 +507,6 @@ def _post_callback(
             "Callback response is invalid JSON.",
             retryable=True,
         ) from None
-
     if (
         not isinstance(reply, dict)
         or reply.get("event_id") != event_id
@@ -530,7 +516,6 @@ def _post_callback(
             "Callback did not confirm this event.",
             retryable=True,
         )
-
     return reply
 
 
@@ -543,7 +528,6 @@ def _send_callback(
     except CallbackError as exc:
         retry = exc.retryable and callback["attempts"] < MAX_ATTEMPTS
         status = "pending" if retry else "failed"
-
         with connection(settings) as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -563,7 +547,6 @@ def _send_callback(
                     callback["id"],
                 ),
             )
-
             audit(
                 conn,
                 callback["approval_request_id"],
@@ -571,11 +554,9 @@ def _send_callback(
                 {"status": status, "attempt": callback["attempts"]},
             )
         return
-
     with connection(settings) as conn:
         conn.execute("BEGIN IMMEDIATE")
         now = utc_now()
-
         cursor = conn.execute(
             """
             UPDATE callback_attempts
@@ -584,10 +565,8 @@ def _send_callback(
             """,
             (now, callback["id"]),
         )
-
         if cursor.rowcount != 1:
             raise RuntimeError("Callback claim was lost.")
-
         conn.execute(
             """
             UPDATE approval_requests
@@ -603,7 +582,6 @@ def _send_callback(
                 callback["approval_request_id"],
             ),
         )
-
         audit(
             conn,
             callback["approval_request_id"],
@@ -615,56 +593,110 @@ def _send_callback(
         )
 
 
+def _claim_workflow_event(settings: Settings) -> dict[str, Any] | None:
+
+    # Claim one durable trigger under the same worker lock as deliveries and callbacks.
+    with connection(settings) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        now = utc_now()
+        row = conn.execute(
+            """SELECT * FROM workflow_events
+               WHERE status = 'pending' AND next_attempt_at <= ?
+               ORDER BY next_attempt_at, id LIMIT 1""",
+            (now,),
+        ).fetchone()
+        if row is None:
+            return None
+        event = dict(row)
+        event["attempts"] += 1
+        conn.execute(
+            """UPDATE workflow_events SET status = 'processing', attempts = ?, updated_at = ?
+               WHERE id = ? AND status = 'pending'""",
+            (event["attempts"], now, event["id"]),
+        )
+        return event
+
+
+def _process_event(settings: Settings, event: dict[str, Any]) -> None:
+    try:
+        process_workflow_event(settings, event["id"])
+        return
+    except ServiceError as exc:
+        retryable = exc.status >= 500 or exc.status == 409
+        reason = f"Workflow event processing failed (HTTP {exc.status})."
+    except Exception:
+
+        # Persist a bounded failure result without recording contacts or payload contents.
+        retryable = True
+        reason = "Unexpected workflow event processing failure."
+        logger.error("Workflow event processing failed.")
+    retry = retryable and event["attempts"] < MAX_ATTEMPTS
+    with connection(settings) as conn:
+        conn.execute(
+            """UPDATE workflow_events
+               SET status = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
+               WHERE id = ? AND status = 'processing' AND attempts = ?""",
+            ("pending" if retry else "failed", _retry_at(event["attempts"]),
+             reason, utc_now(), event["id"], event["attempts"]),
+        )
+
+
 def run_once(settings: Settings, limit: int = 25) -> dict[str, Any]:
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("limit must be an integer between 1 and 100.")
-
+    init_workflow_events(settings)
     with _worker_lock(settings) as acquired:
         if not acquired:
-            return {
-                "skipped": "worker_already_running",
-                "delivery_attempts": 0,
-                "callback_attempts": 0,
-            }
-
+            return {"skipped": "worker_already_running", "workflow_events": 0,
+                    "delivery_attempts": 0, "callback_attempts": 0}
         _recover_interrupted_work(settings)
         client = WhatsAppClient(settings)
-        deliveries = 0
-        callbacks = 0
+        events = deliveries = callbacks = 0
 
-        # Claim one task immediately before processing, rather than leasing a batch.
+        # Resolve triggers before sending the tasks they create.
+        for _ in range(limit):
+            event = _claim_workflow_event(settings)
+            if event is None:
+                break
+            events += 1
+            _process_event(settings, event)
         for _ in range(limit):
             request = _claim_delivery(settings)
-
             if request is None:
                 break
-
             deliveries += 1
             _send_delivery(settings, client, request)
-
         for _ in range(limit):
             callback = _claim_callback(settings)
-
             if callback is None:
                 break
-
             callbacks += 1
             _send_callback(settings, callback)
-
-        return {
-            "delivery_attempts": deliveries,
-            "callback_attempts": callbacks,
-        }
+        return {"workflow_events": events, "delivery_attempts": deliveries,
+                "callback_attempts": callbacks}
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Process durable workflow events and approval queues.")
+    parser.add_argument("--loop", action="store_true", help="Continue processing until stopped.")
+    parser.add_argument("--interval", type=int, default=2, help="Seconds between batches in loop mode.")
+    args = parser.parse_args()
+    if not 1 <= args.interval <= 300:
+        parser.error("interval must be between 1 and 300 seconds")
     settings = load_settings()
+
+    # The worker is a separate process and must initialize its own adapter registry.
+    bootstrap_integrations(settings)
     init_db(settings)
     migrate(settings)
-
-    # Process one batch; scheduling is configured separately.
-    print(json.dumps(run_once(settings)))
-
-
+    init_workflow_events(settings)
+    try:
+        while True:
+            print(json.dumps(run_once(settings)), flush=True)
+            if not args.loop:
+                break
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        logger.info("Approval worker stopping.")
 if __name__ == "__main__":
     main()

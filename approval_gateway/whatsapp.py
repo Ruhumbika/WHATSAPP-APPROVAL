@@ -19,6 +19,7 @@ MAX_RESPONSE_BYTES = 262_144
 MAX_TEMPLATE_FIELD_LENGTH = 1000
 MAX_FILENAME_LENGTH = 200
 
+# Body parameter order must match each approved Meta template.
 _DOCUMENT_FIELDS = {
     "workflow_approval_document": (
         "reference_id",
@@ -32,6 +33,24 @@ _DOCUMENT_FIELDS = {
         "requested_by",
         "department",
         "amount_display",
+        "reason",
+    ),
+    "workflow_approval_detail_document_v2": (
+        "reference_id",
+        "request_title",
+        "workflow_step",
+        "requested_by",
+        "created_by",
+        "cost_center",
+        "request_date",
+        "required_date",
+        "fund_direction",
+        "item_summary",
+        "subtotal_display",
+        "vat_display",
+        "total_display",
+        "payee_display",
+        "payment_method",
         "reason",
     ),
 }
@@ -83,13 +102,20 @@ class WhatsAppClient:
     ) -> list[dict[str, str]]:
         template = self.settings.whatsapp_template_name
 
-        # Parameter order must match the registered template.
         if template in _DOCUMENT_FIELDS:
+            # Detailed messages require the ERP's company display name.
+            company_value = (
+                details.get("company_name")
+                if template == "workflow_approval_detail_document_v2"
+                else company
+            )
             values = [
-                _text(
-                    company,
-                    "company",
-                    MAX_TEMPLATE_FIELD_LENGTH,
+                " ".join(
+                    _text(
+                        company_value,
+                        "company_name",
+                        MAX_TEMPLATE_FIELD_LENGTH,
+                    ).split()
                 )
             ]
 
@@ -99,7 +125,6 @@ class WhatsAppClient:
                     field,
                     MAX_TEMPLATE_FIELD_LENGTH,
                 )
-
                 values.append(" ".join(value.split()))
 
         elif template == "approval_request":
