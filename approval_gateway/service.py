@@ -326,6 +326,76 @@ def _prepare_task(
     return data, actor
 
 
+def _provision_verified_actor(
+    conn: sqlite3.Connection,
+    system: str,
+    company: str,
+    actor: WorkflowActor,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    existing = conn.execute(
+        """
+        SELECT *
+        FROM actor_bindings
+        WHERE system_name = ? AND company = ? AND directory_uuid = ?
+        """,
+        (system, company, actor.directory_uuid),
+    ).fetchone()
+
+    phone = _phone(actor.phone_number)
+
+    if existing is not None:
+        binding, approver = _assigned_actor(
+            conn, system, company, actor.directory_uuid
+        )
+        if approver["company"] not in {company, "all"}:
+            raise ServiceError("Approver company scope mismatch.", 403)
+        _validate_workflow_binding(
+            actor, binding, _phone(approver["phone_number"])
+        )
+        return binding, approver
+
+    now = utc_now()
+
+    # Create an identity-specific record; a shared phone is not identity proof.
+    cursor = conn.execute(
+        """
+        INSERT INTO approvers (
+            name, role, company, phone_number, active,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, 1, ?, ?)
+        """,
+        (
+            f"{system}:{actor.source_user_id}",
+            "workflow_actor",
+            company,
+            phone,
+            now,
+            now,
+        ),
+    )
+    approver_id = cursor.lastrowid
+
+    conn.execute(
+        """
+        INSERT INTO actor_bindings (
+            system_name, company, directory_uuid,
+            source_user_id, approver_id, active
+        )
+        VALUES (?, ?, ?, ?, ?, 1)
+        """,
+        (
+            system,
+            company,
+            actor.directory_uuid,
+            actor.source_user_id,
+            approver_id,
+        ),
+    )
+
+    return _assigned_actor(conn, system, company, actor.directory_uuid)
+
+
 def _persist_task(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -419,12 +489,13 @@ def _persist_task(
                 409,
             )
         return dict(stored), False
-    binding, approver = _assigned_actor(
+    binding, approver = _provision_verified_actor(
         conn,
         system,
         data["company"],
-        data["actor_directory_uuid"],
+        verified_actor,
     )
+
     actor_phone = _phone(approver["phone_number"])
     _validate_workflow_binding(verified_actor, binding, actor_phone)
     request = create_approval_request(
@@ -971,7 +1042,9 @@ def decide(
                 "message_id": response["message_id"],
             },
         )
-        enqueue_notification(conn, request, "received", now, decision=response["action"])
+        enqueue_notification(
+            conn, request, "received", now, decision=response["action"]
+        )
         return {
             "processed": True,
             "decision": response["action"],
