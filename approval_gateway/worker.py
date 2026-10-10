@@ -1,4 +1,5 @@
 """Process queued deliveries and callbacks without holding network transactions."""
+
 from __future__ import annotations
 import fcntl
 import argparse
@@ -18,8 +19,12 @@ from .notifications import enqueue_notification, process_notifications
 from .config import Settings, load_settings
 from .db import connection, init_db, utc_now
 from .service import (
-    ServiceError, _check_actor, _expired, audit,
-    process_workflow_event, verify_delivery_workflow,
+    ServiceError,
+    _check_actor,
+    _expired,
+    audit,
+    process_workflow_event,
+    verify_delivery_workflow,
 )
 from .workflow_events import init_workflow_events
 from .integrations.bootstrap import bootstrap_integrations
@@ -27,6 +32,7 @@ from .integrations.registry import get_workflow_guard
 from .integrations.permissions import IntegrationUnavailable, WorkflowDenied
 from .upgrade import migrate
 from .whatsapp import WhatsAppClient, WhatsAppError
+
 logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 8
 MAX_CALLBACK_RESPONSE_BYTES = 65_536
@@ -42,7 +48,8 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
 
     # Callback secrets must never be forwarded to redirected endpoints.
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(self, req, fp, code, msg, headers, new_url):
+        del req, fp, code, msg, headers, new_url
         return None
 
 
@@ -281,7 +288,11 @@ def _send_delivery(
             raise ValueError("Delivery attempt limit reached.")
         adapter = get_workflow_guard(request["source_system"])
         preparer = getattr(adapter, "prepare_delivery", None)
-        details = preparer(settings, request) if callable(preparer) else json.loads(request["payload_json"])
+        details = (
+            preparer(settings, request)
+            if callable(preparer)
+            else json.loads(request["payload_json"])
+        )
 
         # Recheck after document I/O; no message is sent for a changed ERP snapshot.
         verify_delivery_workflow(settings, request)
@@ -292,17 +303,34 @@ def _send_delivery(
         details["reference_id"] = request["source_reference_id"]
     except IntegrationUnavailable:
         retry = claimed["delivery_attempts"] < MAX_ATTEMPTS
-        _finish_delivery(settings, claimed, "pending" if retry else "failed",
-                         error="Integration delivery preparation is unavailable.")
+        _finish_delivery(
+            settings,
+            claimed,
+            "pending" if retry else "failed",
+            error="Integration delivery preparation is unavailable.",
+        )
         return
     except WorkflowDenied:
-        _finish_delivery(settings, claimed, "blocked", error="Integration delivery preparation was denied.")
+        _finish_delivery(
+            settings,
+            claimed,
+            "blocked",
+            error="Integration delivery preparation was denied.",
+        )
         return
     except ServiceError as exc:
-        retry = exc.status >= 500 and claimed["delivery_attempts"] < MAX_ATTEMPTS
+        retry = (
+            exc.status >= 500 and claimed["delivery_attempts"] < MAX_ATTEMPTS
+        )
         _finish_delivery(
-            settings, claimed, "pending" if retry else "blocked",
-            error="Workflow verification unavailable." if retry else "Task no longer eligible for delivery.",
+            settings,
+            claimed,
+            "pending" if retry else "blocked",
+            error=(
+                "Workflow verification unavailable."
+                if retry
+                else "Task no longer eligible for delivery."
+            ),
         )
         return
     except ValueError:
@@ -583,10 +611,12 @@ def _send_callback(
                 callback["approval_request_id"],
             ),
         )
-        request = dict(conn.execute(
-            "SELECT * FROM approval_requests WHERE id = ?",
-            (callback["approval_request_id"],),
-        ).fetchone())
+        request = dict(
+            conn.execute(
+                "SELECT * FROM approval_requests WHERE id = ?",
+                (callback["approval_request_id"],),
+            ).fetchone()
+        )
         enqueue_notification(conn, request, "result", now)
         audit(
             conn,
@@ -629,9 +659,14 @@ def _process_event(settings: Settings, event: dict[str, Any]) -> None:
         return
     except ServiceError as exc:
         retryable = exc.status >= 500 or exc.status == 409
-        reason = f"Workflow event processing failed (HTTP {exc.status})."
+        reason = (
+            f"Workflow event processing failed "
+            f"(HTTP {exc.status}): {str(exc)[:300]}"
+            if isinstance(exc, ServiceError)
+            else f"Workflow event processing failed: {str(exc)[:300]}"
+        )
+        logger.warning("Workflow event %s: %s", event["id"], reason)
     except Exception:
-
         # Persist a bounded failure result without recording contacts or payload contents.
         retryable = True
         reason = "Unexpected workflow event processing failure."
@@ -640,10 +675,16 @@ def _process_event(settings: Settings, event: dict[str, Any]) -> None:
     with connection(settings) as conn:
         conn.execute(
             """UPDATE workflow_events
-               SET status = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
-               WHERE id = ? AND status = 'processing' AND attempts = ?""",
-            ("pending" if retry else "failed", _retry_at(event["attempts"]),
-             reason, utc_now(), event["id"], event["attempts"]),
+              SET status = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
+              WHERE id = ? AND status = 'processing' AND attempts = ?""",
+            (
+                "pending" if retry else "failed",
+                _retry_at(event["attempts"]),
+                reason,
+                utc_now(),
+                event["id"],
+                event["attempts"],
+            ),
         )
 
 
@@ -653,8 +694,12 @@ def run_once(settings: Settings, limit: int = 25) -> dict[str, Any]:
     init_workflow_events(settings)
     with _worker_lock(settings) as acquired:
         if not acquired:
-            return {"skipped": "worker_already_running", "workflow_events": 0,
-                    "delivery_attempts": 0, "callback_attempts": 0}
+            return {
+                "skipped": "worker_already_running",
+                "workflow_events": 0,
+                "delivery_attempts": 0,
+                "callback_attempts": 0,
+            }
         _recover_interrupted_work(settings)
         client = WhatsAppClient(settings)
         events = deliveries = callbacks = 0
@@ -679,14 +724,28 @@ def run_once(settings: Settings, limit: int = 25) -> dict[str, Any]:
             callbacks += 1
             _send_callback(settings, callback)
         process_notifications(settings, client, limit)
-        return {"workflow_events": events, "delivery_attempts": deliveries,
-                "callback_attempts": callbacks}
+        return {
+            "workflow_events": events,
+            "delivery_attempts": deliveries,
+            "callback_attempts": callbacks,
+        }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Process durable workflow events and approval queues.")
-    parser.add_argument("--loop", action="store_true", help="Continue processing until stopped.")
-    parser.add_argument("--interval", type=int, default=2, help="Seconds between batches in loop mode.")
+    parser = argparse.ArgumentParser(
+        description="Process durable workflow events and approval queues."
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Continue processing until stopped.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=2,
+        help="Seconds between batches in loop mode.",
+    )
     args = parser.parse_args()
     if not 1 <= args.interval <= 300:
         parser.error("interval must be between 1 and 300 seconds")
@@ -705,5 +764,7 @@ def main() -> None:
             time.sleep(args.interval)
     except KeyboardInterrupt:
         logger.info("Approval worker stopping.")
+
+
 if __name__ == "__main__":
     main()
