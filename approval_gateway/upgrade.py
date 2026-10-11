@@ -1,4 +1,4 @@
-"""Apply additive schema changes without replacing existing records."""
+"""Upgrade schema while preserving task and conversation records."""
 
 import sqlite3
 
@@ -7,6 +7,11 @@ from .db import connection, utc_now
 
 # Fixed migration definitions; identifiers never come from request input.
 _REQUEST_COLUMNS = {
+    "decision_rejection_json": "TEXT",
+    "rejection_phase": "TEXT NOT NULL DEFAULT 'closed' CHECK(rejection_phase IN ('choice','reason','closed'))",
+    "rejection_mode": "TEXT CHECK(rejection_mode IN ('correction','final'))",
+    "rejection_expires_at": "TEXT",
+    "rejection_updated_at": "TEXT",
     "step_id": "TEXT NOT NULL DEFAULT 'default'",
     "workflow_version": "TEXT NOT NULL DEFAULT '1'",
     "idempotency_key": "TEXT",
@@ -146,12 +151,41 @@ def _backfill_delivery_state(conn: sqlite3.Connection) -> None:
     )
 
 
+def _move_rejection_conversations(conn: sqlite3.Connection) -> None:
+    """Upgrade the previous patch atomically, without losing active conversations."""
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rejection_conversations'"
+    ).fetchone():
+        return
+    invalid = conn.execute("""
+        SELECT 1 FROM rejection_conversations c
+        LEFT JOIN approval_requests r ON r.id=c.approval_request_id
+        WHERE r.id IS NULL OR r.actor_phone IS NULL OR r.actor_phone != c.phone
+        LIMIT 1
+    """).fetchone()
+    if invalid:
+        raise RuntimeError("Legacy rejection conversation has no matching task actor; migration rolled back.")
+    conn.execute("""
+        UPDATE approval_requests
+        SET rejection_phase = (SELECT phase FROM rejection_conversations WHERE approval_request_id=approval_requests.id),
+            rejection_mode = (SELECT mode FROM rejection_conversations WHERE approval_request_id=approval_requests.id),
+            rejection_expires_at = (SELECT expires_at FROM rejection_conversations WHERE approval_request_id=approval_requests.id),
+            rejection_updated_at = (SELECT updated_at FROM rejection_conversations WHERE approval_request_id=approval_requests.id)
+        WHERE EXISTS (
+            SELECT 1 FROM rejection_conversations c WHERE c.approval_request_id=approval_requests.id
+              AND (approval_requests.rejection_updated_at IS NULL OR c.updated_at > approval_requests.rejection_updated_at)
+        )
+    """)
+    conn.execute("DROP TABLE rejection_conversations")
+
+
 def migrate(settings: Settings) -> None:
     with connection(settings) as conn:
         # Acquire the write lock before inspecting or changing the schema.
         conn.execute("BEGIN IMMEDIATE")
 
         _add_request_columns(conn)
+        _move_rejection_conversations(conn)
 
         # Execute individually to preserve the surrounding transaction.
         for statement in _SCHEMA_STATEMENTS:

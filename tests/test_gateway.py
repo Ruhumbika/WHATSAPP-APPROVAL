@@ -110,10 +110,12 @@ class GatewayTests(unittest.TestCase):
         self.assertFalse(created)
         self.assertEqual(first['id'], second['id'])
 
-    def test_company_without_actor_binding_is_denied(self):
-        with self.assertRaises(ServiceError) as caught:
-            create(self.settings, 'test-peta-key', dict(self.data, company='88'))
-        self.assertEqual(caught.exception.status, 403)
+    def test_verified_actor_gets_separate_company_binding(self):
+        request, created = create(self.settings, 'test-peta-key', dict(self.data, company='88'))
+        self.assertTrue(created)
+        with connection(self.settings) as conn:
+            binding = conn.execute('SELECT company FROM actor_bindings WHERE id=?', (request['actor_binding_id'],)).fetchone()
+        self.assertEqual(binding['company'], '88')
 
     def test_other_system_cannot_read_task(self):
         request = self.new_request()
@@ -185,8 +187,9 @@ class GatewayTests(unittest.TestCase):
     def test_parser_filters_account_and_ambiguous_text(self):
         payload = {'object': 'whatsapp_business_account', 'entry': [{'changes': [{'field': 'messages', 'value': {'metadata': {'phone_number_id': '123'}, 'messages': [{'type': 'text', 'id': 'incoming-a', 'from': self.phone, 'text': {'body': 'go on'}, 'context': {'id': 'outgoing-1'}}, {'type': 'interactive', 'id': 'incoming-b', 'from': self.phone, 'interactive': {'type': 'button_reply', 'button_reply': {'id': 'reject_AGR-ABC'}}}]}}]}]}
         responses = list(extract_responses(payload, expected_phone_number_id='123'))
-        self.assertEqual(len(responses), 1)
-        self.assertEqual(responses[0]['action'], 'rejected')
+        self.assertEqual(len(responses), 2)
+        self.assertEqual(responses[0]['action'], 'conversation')
+        self.assertEqual(responses[1]['action'], 'rejected')
         self.assertEqual(list(extract_responses(payload, expected_phone_number_id='999')), [])
 
     def test_unknown_delivery_is_not_automatically_retried(self):

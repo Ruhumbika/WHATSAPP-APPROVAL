@@ -158,6 +158,20 @@ def extract_responses(
                     match = _TEXT_PATTERN.fullmatch(original_text.strip())
 
                 if match is None:
+                    # Free text is routed only to a persisted rejection conversation.
+                    if (
+                        not is_button
+                        and original_text.strip()
+                        and len(original_text) <= 4096
+                    ):
+                        yield {
+                            "action": "conversation",
+                            "reference": None,
+                            "context_id": context_id,
+                            "phone": phone,
+                            "message_id": message_id,
+                            "text": original_text,
+                        }
                     continue
 
                 command = match.group(1).lower()

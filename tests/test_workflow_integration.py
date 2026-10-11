@@ -88,7 +88,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.peta = PetaClient("https://peta.example/api/v1")
         self.peta._get = Mock(side_effect=self.peta_response)
         directory = PetaDirectoryClient(
-            "https://directory.example/api", "test-token", {}, {}
+            "https://directory.example/api/v1/client", "test-token", service_id=4, shared_user_ids=True
         )
         directory._get = Mock(side_effect=self.directory_response)
         configure_workflow_guards(
@@ -150,13 +150,14 @@ class WorkflowIntegrationTests(unittest.TestCase):
         }
 
     def directory_response(self, path):
-        uid = int(path.split("/")[1])
+        from urllib.parse import parse_qs, urlsplit
+        uid = int(parse_qs(urlsplit(path).query)["user_id"][0])
         identity, _, name, phone = next(
             actor for actor in ACTORS if actor[1] == uid
         )
         return {
             "status": "success",
-            "user_details": {
+            "data": {"service_details": {"id": 4}, "user_details": {
                 "id": uid,
                 "uuid": identity,
                 "username": name,
@@ -166,7 +167,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
                 "is_active": 1,
                 "banned_at": None,
                 "banned_until": None,
-            },
+            }},
         }
 
     def trigger(self, **fields):
@@ -198,6 +199,11 @@ class WorkflowIntegrationTests(unittest.TestCase):
         )
         value.update(fields)
         return decide(self.settings, value)
+
+    def reject_with_reason(self, task):
+        self.reply(task, action="rejected", text="Reject")
+        self.reply(task, action="conversation", text="2")
+        return self.reply(task, action="conversation", text="Wrong quantities")
 
     def run_worker(self):
         with patch("approval_gateway.worker.WhatsAppClient") as client:
@@ -244,9 +250,9 @@ class WorkflowIntegrationTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.trigger(source_system="other")
 
-    def test_atomic_tasks_and_completion_when_binding_missing(self):
+    def test_atomic_tasks_and_completion_when_binding_disabled(self):
         with connection(self.settings) as c:
-            c.execute("DELETE FROM actor_bindings")
+            c.execute("UPDATE actor_bindings SET active=0")
         self.trigger()
         result, client = self.run_worker()
         client.return_value.send_approval_request.assert_not_called()
@@ -313,7 +319,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.trigger()
         self.run_worker()
         task = self.task()
-        self.reply(task, action="rejected", text="Reject")
+        self.reject_with_reason(task)
         self.assertFalse(self.reply(task, action="approved")["processed"])
         with connection(self.settings) as c:
             self.assertEqual(c.execute("SELECT COUNT(*) FROM callback_attempts").fetchone()[0], 1)
@@ -418,14 +424,14 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.trigger()
         self.run_worker()
         task = self.task()
-        self.reply(task, action="rejected")
+        self.reject_with_reason(task)
         with connection(self.settings) as c:
             c.execute("UPDATE approval_requests SET execution_status='applied' WHERE id=?", (task["id"],))
         message_id = str(uuid4())
         self.assertFalse(self.reply(task, action="approved", message_id=message_id)["processed"])
         self.assertFalse(self.reply(task, action="approved", message_id=message_id)["processed"])
         with connection(self.settings) as c:
-            rows = c.execute("SELECT body FROM decision_repeat_notifications").fetchall()
+            rows = c.execute("SELECT body FROM decision_repeat_notifications WHERE body LIKE '%You cannot%'").fetchall()
             self.assertEqual(len(rows), 1)
             self.assertIn("You cannot approve requisition", rows[0][0])
             self.assertIn("decision to reject it has already been applied", rows[0][0])
@@ -434,7 +440,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         client.send_text.return_value = "wamid.notice"
         process_notifications(self.settings, client, 25)
         with connection(self.settings) as c:
-            self.assertEqual(c.execute("SELECT status FROM decision_repeat_notifications").fetchone()[0], "simulated")
+            self.assertEqual(c.execute("SELECT status FROM decision_repeat_notifications WHERE body LIKE '%You cannot%'").fetchone()[0], "simulated")
         self.assertEqual(self.task()["status"], "rejected")
 
     def test_opposite_click_reports_processing_without_claiming_success(self):
@@ -673,7 +679,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         post.assert_not_called()
         self.assertEqual(self.task()["delivery_status"], "blocked")
 
-    def test_two_candidates_rollback_together_if_second_binding_is_missing(
+    def test_two_candidates_rollback_together_if_second_binding_is_disabled(
         self,
     ):
         original = self.peta_response
@@ -693,7 +699,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
 
         self.peta._get.side_effect = response
         with connection(self.settings) as c:
-            c.execute("DELETE FROM actor_bindings WHERE approver_id=2")
+            c.execute("UPDATE actor_bindings SET active=0 WHERE approver_id=2")
         self.trigger()
         self.run_worker()
         with connection(self.settings) as c:

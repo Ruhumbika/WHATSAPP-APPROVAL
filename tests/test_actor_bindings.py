@@ -80,10 +80,12 @@ class ActorBindingTests(unittest.TestCase):
         self.assertIsNone(event['actor']['user_id'])
         self.assertEqual(event['company'], '77')
 
-    def test_binding_cannot_be_used_for_another_company(self):
-        with self.assertRaises(ServiceError) as caught:
-            create(self.settings, 'test-peta-key', dict(self.data, company='88'))
-        self.assertEqual(caught.exception.status, 403)
+    def test_verified_actor_gets_separate_binding_for_another_company(self):
+        request, created = create(self.settings, 'test-peta-key', dict(self.data, company='88'))
+        self.assertTrue(created)
+        with connection(self.settings) as conn:
+            binding = conn.execute('SELECT company FROM actor_bindings WHERE id=?', (request['actor_binding_id'],)).fetchone()
+        self.assertEqual(binding['company'], '88')
 
     def test_revoked_binding_blocks_decision(self):
         request = self.new_request()

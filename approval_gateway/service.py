@@ -835,6 +835,7 @@ def _callback_payload(
         "step_id": request["step_id"],
         "workflow_version": request["workflow_version"],
         "status": response["action"],
+        **({"rejection": response["rejection"]} if response.get("rejection") else {}),
         "responded_at": now,
         "channel": "whatsapp",
         "actor": {
@@ -846,13 +847,13 @@ def _callback_payload(
         "evidence": {
             "message_id": response["message_id"],
             "original_reply": response["text"],
-            "context_id": response.get("context_id"),
+            "context_id": response.get("conversation_context_id", response.get("context_id")),
         },
         "payload": json.loads(request["payload_json"]),
     }
 
 
-def decide(
+def _commit_decision(
     settings: Settings,
     response: dict[str, Any],
 ) -> dict[str, Any]:
@@ -962,6 +963,12 @@ def decide(
         if request["status"] != "pending":
             enqueue_repeat_notification(conn, request, response, now)
             return {"processed": False, "reason": request["status"]}
+        if response["action"] == "rejected" and request["request_type"] in {"requisition_approval", "payment_advice_approval"}:
+            from .rejection import consume_reason
+            consume_reason(conn, request, response, now)
+        else:
+            conn.execute("UPDATE approval_requests SET rejection_phase='closed', rejection_updated_at=? WHERE id=?", (now, request["id"]))
+        conn.execute("UPDATE decision_repeat_notifications SET status='expired',updated_at=? WHERE approval_request_id=? AND status='pending'", (now,request['id']))
         callback = _callback_payload(request, response, now)
 
         # Persist the decision, callback queue and audit atomically.
@@ -980,7 +987,8 @@ def decide(
 
                 original_reply = ?,
 
-                execution_status = 'pending'
+                execution_status = 'pending',
+                decision_rejection_json = ?
 
             WHERE id = ? AND status = 'pending'
 
@@ -991,6 +999,7 @@ def decide(
                 now,
                 response["message_id"],
                 response["text"],
+                _json(response["rejection"]) if response.get("rejection") else None,
                 request["id"],
             ),
         )
@@ -1042,6 +1051,7 @@ def decide(
                 "message_id": response["message_id"],
             },
         )
+        request["decision_rejection_json"] = _json(response["rejection"]) if response.get("rejection") else None
         enqueue_notification(
             conn, request, "received", now, decision=response["action"]
         )
@@ -1149,3 +1159,9 @@ def cancel(
         )
         audit(conn, request["id"], "cancelled", {})
         return {"status": "cancelled"}
+
+
+def decide(settings: Settings, response: dict[str, Any]) -> dict[str, Any]:
+    """Only signature-verified webhook responses enter this dispatcher."""
+    from .rejection import route_response
+    return route_response(settings, response)
