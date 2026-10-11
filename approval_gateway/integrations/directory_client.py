@@ -1,14 +1,12 @@
-"""Read current User Directory permissions through the verified API endpoint."""
+"""Read service-scoped Directory identities; ERP owns approval authorization."""
 
 from __future__ import annotations
-
 import json
 import urllib.error
 import urllib.request
 from typing import Any, Mapping
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode
 from uuid import UUID
-
 from .permissions import DirectoryUser, IntegrationUnavailable
 
 # Bound large permission responses before decoding JSON.
@@ -45,12 +43,14 @@ class UserDirectoryClient:
         self,
         base_url: str,
         access_token: str,
-        user_ids: Mapping[str, int],
-        service_access_permissions: Mapping[int, int],
+        *,
+        service_id: int,
+        source_user_key: str | None = None,
+        shared_user_ids: bool = False,
         timeout_seconds: int = 10,
     ) -> None:
-        # Use operator-provided UUID mappings; verify them on every response.
         url = urlsplit(base_url)
+        url.port
         if (
             url.scheme != "https"
             or not url.hostname
@@ -58,54 +58,129 @@ class UserDirectoryClient:
             or url.password is not None
             or url.query
             or url.fragment
-            or any(char.isspace() for char in base_url)
+            or any(ord(c) <= 32 or ord(c) == 127 for c in base_url)
         ):
             raise ValueError(
                 "Directory base URL must use HTTPS without credentials"
             )
-        if not access_token or any(
-            ord(c) < 33 or ord(c) == 127 for c in access_token
+        if (
+            not isinstance(access_token, str)
+            or not access_token
+            or any(ord(c) < 33 or ord(c) == 127 for c in access_token)
         ):
-            raise ValueError("A valid Directory access token is required")
+            raise ValueError("A valid Directory system token is required")
         if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 60:
             raise ValueError(
                 "Directory timeout must be between 1 and 60 seconds"
             )
-
+        if type(shared_user_ids) is not bool:
+            raise ValueError("shared_user_ids must be boolean")
+        if source_user_key is not None and (
+            not isinstance(source_user_key, str) or not source_user_key.strip()
+        ):
+            raise ValueError("Invalid source user mapping key")
+        if source_user_key is None and not shared_user_ids:
+            raise ValueError(
+                "Configure a mapping key or explicitly shared user IDs"
+            )
         self.base_url = base_url.rstrip("/")
+        if not self.base_url.endswith("/api/v1/client"):
+            raise ValueError("Directory base URL must end with /api/v1/client")
         self.access_token = access_token
+        self.service_id = _positive_id(service_id)
+        self.source_user_key = source_user_key
+        self.shared_user_ids = shared_user_ids
         self.timeout_seconds = timeout_seconds
-        self.user_ids: dict[str, int] = {}
-        for identity, user_id in user_ids.items():
-            canonical = str(UUID(identity))
-            if canonical in self.user_ids:
-                raise ValueError("Duplicate Directory identity mapping")
-            self.user_ids[canonical] = _positive_id(user_id)
-        self.service_access_permissions = {
-            _positive_id(service): _positive_id(permission)
-            for service, permission in service_access_permissions.items()
-        }
         self.opener = urllib.request.build_opener(_RejectRedirects())
 
-    def get_user(self, directory_uuid: str) -> DirectoryUser:
-        # The API uses numeric Directory IDs, not local ERP user IDs.
+    def get_service_details(
+        self,
+        *,
+        user_id: int | None = None,
+        user_uuid: str | None = None,
+    ) -> tuple[DirectoryUser, dict[str, Any]]:
         try:
-            canonical = str(UUID(directory_uuid))
-            user_id = self.user_ids[canonical]
-        except (ValueError, TypeError, AttributeError, KeyError) as exc:
-            raise IntegrationUnavailable(
-                "Directory identity is not registered"
-            ) from exc
-        payload = self._get(f"users/{user_id}/permissions")
-        try:
-            return self._parse_user(payload, canonical, user_id)
+            if (user_id is None) == (user_uuid is None):
+                raise ValueError("Provide exactly one Directory ID or UUID")
+            query = {"service_id": self.service_id}
+            if user_uuid is not None:
+                user_uuid = str(UUID(user_uuid))
+                query["user_uuid"] = user_uuid
+            else:
+                query["user_id"] = _positive_id(user_id)
+            payload = self._get("user-service-details?" + urlencode(query))
+            if payload.get("status") != "success":
+                raise ValueError("Unsuccessful Directory response")
+            data = payload["data"]
+            profile = data["user_details"]
+            service = data["service_details"]
+            if not isinstance(profile, dict) or not isinstance(service, dict):
+                raise ValueError("Expected user and service details")
+            directory_id = _positive_id(profile["id"])
+            canonical = str(UUID(profile["uuid"]))
+            if (user_id is not None and directory_id != user_id) or (
+                user_uuid is not None and canonical != user_uuid
+            ):
+                raise ValueError("Directory identity mismatch")
+            if _positive_id(service["id"]) != self.service_id:
+                raise ValueError("Directory service mismatch")
+            # Contract: a successful scoped response means Directory has already
+            # checked account eligibility. Do not repeat its internal status checks.
+            active = True
+            mapping = profile.get("company_user_id")
+            if mapping is None:
+                mapping = {}
+            if not isinstance(mapping, dict):
+                raise ValueError("Expected ERP user mappings")
+            source_ids = []
+            for key, value in mapping.items():
+                if not isinstance(key, str) or not key.strip():
+                    raise ValueError("Invalid mapping key")
+                if value is None or value == "":
+                    continue
+                if (
+                    isinstance(value, str)
+                    and value.isascii()
+                    and value.isdigit()
+                ):
+                    value = int(value)
+                source_ids.append((key, str(_positive_id(value))))
+            user = DirectoryUser(
+                directory_uuid=canonical,
+                directory_user_id=directory_id,
+                active=active,
+                service_ids=frozenset({self.service_id}),
+                granted_permissions=frozenset(),
+                source_user_ids=tuple(sorted(source_ids)),
+            )
+            return user, profile
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             raise IntegrationUnavailable(
-                "Invalid Directory permission response"
+                "Invalid Directory identity/service response"
             ) from exc
 
+    def get_user(self, user_id: int, service_id: int) -> DirectoryUser:
+        if service_id != self.service_id:
+            raise IntegrationUnavailable(
+                "Directory service does not match integration"
+            )
+        return self.get_service_details(user_id=user_id)[0]
+
+    def source_user_id(self, user: DirectoryUser) -> int:
+        mapping = dict(user.source_user_ids)
+        if (
+            self.source_user_key is not None
+            and self.source_user_key in mapping
+        ):
+            return _positive_id(int(mapping[self.source_user_key]))
+        if self.shared_user_ids:
+            return user.directory_user_id
+        raise IntegrationUnavailable(
+            "ERP user mapping is missing for this integration"
+        )
+
     def _get(self, path: str) -> dict[str, Any]:
-        # Bound response size and omit credentials and response bodies from errors.
+        # * Bound response size and omit credentials and response bodies from errors.*
         request = urllib.request.Request(
             f"{self.base_url}/{path}",
             headers={
@@ -141,86 +216,3 @@ class UserDirectoryClient:
             RecursionError,
         ) as exc:
             raise IntegrationUnavailable("Directory request failed") from exc
-
-    def _parse_user(
-        self, payload: dict[str, Any], directory_uuid: str, user_id: int
-    ) -> DirectoryUser:
-        # Bind the returned numeric ID and UUID to the requested identity.
-        if payload.get("status") != "success":
-            raise ValueError("Directory response was unsuccessful")
-        user = payload["user_details"]
-        if not isinstance(user, dict):
-            raise ValueError("Expected user details")
-        if (
-            _positive_id(user["id"]) != user_id
-            or str(UUID(user["uuid"])) != directory_uuid
-        ):
-            raise ValueError("Directory identity mismatch")
-        active_flag = user["is_active"]
-        if type(active_flag) is not int or active_flag not in (0, 1):
-            raise ValueError("Invalid account status")
-        # Until ban semantics are confirmed, any ban marker prevents authorization.
-        active = (
-            active_flag == 1
-            and user["banned_at"] is None
-            and user["banned_until"] is None
-        )
-
-        # Only checked=true grants permission; ignore the undocumented dat field.
-        groups = payload["data"]
-        if not isinstance(groups, list):
-            raise ValueError("Expected service groups")
-        grants: set[tuple[int, int]] = set()
-        seen_services: set[int] = set()
-        for group in groups:
-            service_id = _positive_id(group["service_id"])
-            if service_id in seen_services:
-                raise ValueError("Duplicate service group")
-            seen_services.add(service_id)
-            permissions = group["permissions"]
-            if not isinstance(permissions, list):
-                raise ValueError("Expected service permissions")
-            seen_permissions: set[int] = set()
-            for permission in permissions:
-                permission_id = _positive_id(permission["id"])
-                checked = permission["checked"]
-                if (
-                    type(checked) is not bool
-                    or permission_id in seen_permissions
-                ):
-                    raise ValueError("Invalid or duplicate permission")
-                seen_permissions.add(permission_id)
-                if checked:
-                    grants.add((service_id, permission_id))
-        service_ids = frozenset(
-            service
-            for service, permission in self.service_access_permissions.items()
-            if (service, permission) in grants
-        )
-
-        # Preserve optional ERP mappings without guessing aliases or company access.
-        mapping = user["company_user_id"]
-        if mapping is None:
-            mapping = {}
-        if not isinstance(mapping, dict):
-            raise ValueError("Expected ERP user mappings")
-        source_ids: list[tuple[str, str]] = []
-        for key, value in mapping.items():
-            if not isinstance(key, str) or not key.strip():
-                raise ValueError("Invalid mapping key")
-            if value is None or value == "":
-                continue
-            if type(value) is int and value > 0:
-                source_ids.append((key, str(value)))
-            elif isinstance(value, str) and value.strip():
-                source_ids.append((key, value.strip()))
-            else:
-                raise ValueError("Invalid mapped user ID")
-        return DirectoryUser(
-            directory_uuid=directory_uuid,
-            directory_user_id=user_id,
-            active=active,
-            service_ids=service_ids,
-            granted_permissions=frozenset(grants),
-            source_user_ids=tuple(sorted(source_ids)),
-        )

@@ -1,7 +1,6 @@
 """Resolve PETA's outstanding approval level and Directory recipients."""
 
 from __future__ import annotations
-
 import hashlib
 import json
 import re
@@ -15,7 +14,6 @@ from uuid import UUID
 from urllib.parse import urlsplit
 from datetime import date
 from decimal import Decimal, InvalidOperation
-
 from .directory_client import (
     MAX_RESPONSE_BYTES,
     UserDirectoryClient,
@@ -285,6 +283,11 @@ class PetaClient:
                         "id": user_id,
                         "username": user["username"],
                         "email": user["email"],
+                        **{
+                            key: user[key]
+                            for key in ("directory_uuid", "directory_user_id")
+                            if key in user
+                        },
                     }
                 )
             role = level["role"] or {}
@@ -307,32 +310,35 @@ class PetaDirectoryClient(UserDirectoryClient):
         self, assigned_user: dict[str, Any]
     ) -> ApprovalRecipient:
         try:
-            user_id = _positive_id(assigned_user["id"])
-            payload = self._get(f"users/{user_id}/permissions")
-            profile = payload["user_details"]
-            directory_uuid = str(UUID(profile["uuid"]))
-            if (
-                payload.get("status") != "success"
-                or _positive_id(profile["id"]) != user_id
-            ):
-                raise ValueError("Directory identity mismatch")
-            active_flag = profile["is_active"]
-            if type(active_flag) is not int or active_flag != 1:
+            local_id = _positive_id(assigned_user["id"])
+            # Different-ID systems must supply a Directory identity from the ERP.
+            directory_uuid = assigned_user.get("directory_uuid")
+            directory_id = assigned_user.get("directory_user_id")
+            if directory_uuid is not None:
+                user, profile = self.get_service_details(
+                    user_uuid=directory_uuid
+                )
+                if (
+                    directory_id is not None
+                    and user.directory_user_id != _positive_id(directory_id)
+                ):
+                    raise ValueError("Conflicting Directory identity evidence")
+            elif directory_id is not None:
+                user, profile = self.get_service_details(
+                    user_id=_positive_id(directory_id)
+                )
+            elif self.shared_user_ids:
+                user, profile = self.get_service_details(user_id=local_id)
+            else:
+                raise ValueError(
+                    "ERP must provide Directory ID or UUID for mapped users"
+                )
+            if not user.active:
                 raise ValueError("Active Directory identity required")
-            if (
-                profile["banned_at"] is not None
-                or profile["banned_until"] is not None
-            ):
-                raise ValueError("Directory identity has a ban marker")
-            # Directory supplies identity and contacts, not approval-chain authority.
-            user = DirectoryUser(
-                directory_uuid=directory_uuid,
-                directory_user_id=user_id,
-                active=True,
-                service_ids=frozenset(),
-                granted_permissions=frozenset(),
-            )
-            # Compare identity attributes as well as the centrally synchronized ID.
+            if self.source_user_id(user) != local_id:
+                raise ValueError(
+                    "ERP user mapping does not match assigned approver"
+                )
             for field in ("username", "email"):
                 local_value = assigned_user[field]
                 remote_value = profile[field]
@@ -340,6 +346,7 @@ class PetaDirectoryClient(UserDirectoryClient):
                     not isinstance(local_value, str)
                     or not local_value.strip()
                     or not isinstance(remote_value, str)
+                    or not remote_value.strip()
                     or local_value.strip().casefold()
                     != remote_value.strip().casefold()
                 ):
@@ -350,15 +357,16 @@ class PetaDirectoryClient(UserDirectoryClient):
             if not isinstance(phone, str) or not phone.strip():
                 raise ValueError("Directory phone number required")
             return ApprovalRecipient(
-                peta_user_id=user_id,
+                peta_user_id=local_id,
                 directory_user=user,
                 username=profile["username"],
                 phone_number=phone.strip(),
-                phone_verified=profile["phone_verified_at"] is not None,
+                # Compatibility field only; Directory does not verify phone ownership.
+                phone_verified=False,
             )
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             raise IntegrationUnavailable(
-                "PETA recipient could not be verified"
+                "PETA recipient identity could not be resolved"
             ) from exc
 
 
@@ -405,14 +413,12 @@ def _detailed_message_fields(record: Mapping[str, Any]) -> dict[str, str]:
     company_name = record.get("company_name")
     if not isinstance(company_name, str) or not company_name.strip():
         raise IntegrationUnavailable("PETA company name is missing")
-
     items = record.get("items")
     sources = record.get("sources", [])
     if not isinstance(items, list) or not items:
         raise IntegrationUnavailable("PETA request has no items")
     if not isinstance(sources, list):
         raise IntegrationUnavailable("Invalid PETA payment sources")
-
     # Keep currencies separate and use totals supplied by the ERP.
     totals: dict[str, list[Decimal]] = {}
     summaries: list[str] = []
@@ -420,7 +426,6 @@ def _detailed_message_fields(record: Mapping[str, Any]) -> dict[str, str]:
         currency = text(item.get("currency"), "")
         if not currency:
             raise IntegrationUnavailable("PETA item currency is missing")
-
         amounts = totals.setdefault(
             currency, [Decimal("0"), Decimal("0"), Decimal("0")]
         )
@@ -428,7 +433,6 @@ def _detailed_message_fields(record: Mapping[str, Any]) -> dict[str, str]:
             ("amount_before_vat", "vat_amount", "total_amount")
         ):
             amounts[index] += number(item.get(field))
-
         for material in item.get("materials", []):
             quantity = number(material.get("quantity"))
             rate = number(material.get("rate"))
@@ -437,7 +441,6 @@ def _detailed_message_fields(record: Mapping[str, Any]) -> dict[str, str]:
                 f"{quantity:,.2f} {text(material.get('unit'))} "
                 f"× {text(material.get('currency'), currency)} {rate:,.2f}"
             )
-
         for account in item.get("accounts", []):
             summaries.append(
                 f"{text(account.get('account_name'))}: "
@@ -468,11 +471,9 @@ def _detailed_message_fields(record: Mapping[str, Any]) -> dict[str, str]:
             item_summary[:220].rstrip()
             + "… Full item details in attached PDF."
         )
-
     reason = text(record.get("remarks"))
     if len(reason) > 180:
         reason = reason[:140].rstrip() + "… Full reason in attached PDF."
-
     return {
         "company_name": text(company_name),
         "reference_id": str(record["id"]),
@@ -512,7 +513,6 @@ class PetaWorkflowGuard:
         self.local_calling_code = local_calling_code
 
     def authorize(self, request: Mapping[str, object]) -> WorkflowActor:
-
         # Read company and record state from PETA, never from a role label.
         if request.get("request_type") != "requisition_approval":
             raise WorkflowDenied("PETA request type is not configured")
@@ -534,7 +534,6 @@ class PetaWorkflowGuard:
             raise WorkflowDenied(
                 "Requisition is not awaiting a workflow decision"
             )
-
         # The existing controller may set APPROVED before all chain levels finish.
         step = self.peta.get_pending_step(requisition_id)
         if step is None or str(step.level_id) != request.get("step_id"):
@@ -553,7 +552,6 @@ class PetaWorkflowGuard:
             raise WorkflowDenied(
                 "Directory actor is not assigned to the current level"
             )
-
         phone = self._international_phone(actor.phone_number)
         digest = self._record_digest(record, step)
         return WorkflowActor(
@@ -614,7 +612,6 @@ class PetaWorkflowGuard:
     ) -> dict[str, Any]:
         # Prepare ERP-specific presentation and PDF media inside the adapter.
         details = json.loads(request["payload_json"])
-
         if (
             settings.whatsapp_template_name
             == "workflow_approval_detail_document_v2"
@@ -623,7 +620,6 @@ class PetaWorkflowGuard:
             if not isinstance(snapshot, dict):
                 raise IntegrationUnavailable("PETA record snapshot is missing")
             details.update(_detailed_message_fields(snapshot))
-
         if settings.whatsapp_template_name not in {
             "workflow_approval_document",
             "requisition_approval_document",
@@ -746,9 +742,16 @@ def build_adapter(
         "directory_base_url",
         "directory_access_token_env",
         "local_calling_code",
+        "directory_service_id_env",
+        "directory_shared_user_ids",
     }
     if set(options) - (
-        required | {"allow_local_http", "document_access_token_env"}
+        required
+        | {
+            "allow_local_http",
+            "document_access_token_env",
+            "directory_source_user_key",
+        }
     ) or not required.issubset(options):
         raise ValueError("Invalid PETA adapter options")
 
@@ -786,7 +789,7 @@ def build_adapter(
     document_token = (
         environment.get(document_token_name, "") if document_token_name else ""
     )
-    return PetaWorkflowGuard(
+    guard = PetaWorkflowGuard(
         peta=PetaClient(
             credential(options["api_base_url_env"]),
             token,
@@ -796,8 +799,10 @@ def build_adapter(
         directory=PetaDirectoryClient(
             base_url=directory_url,
             access_token=credential(options["directory_access_token_env"]),
-            user_ids={},
-            service_access_permissions={},
+            service_id=int(credential(options["directory_service_id_env"])),
+            source_user_key=options.get("directory_source_user_key"),
+            shared_user_ids=options["directory_shared_user_ids"],
         ),
         local_calling_code=calling_code,
     )
+    return guard

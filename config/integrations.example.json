@@ -6,9 +6,11 @@
       "options": {
         "api_base_url_env": "PETA_API_BASE_URL",
         "access_token_env": "PETA_ACCESS_TOKEN",
-        "directory_base_url": "https://user-directory.abooderp.com/api/v1",
+        "directory_base_url": "https://user-directory.abooderp.com/api/v1/client",
         "directory_access_token_env": "USER_DIRECTORY_ACCESS_TOKEN",
-        "local_calling_code": "255"
+        "local_calling_code": "255",
+        "directory_service_id_env": "PETA_DIRECTORY_SERVICE_ID",
+        "directory_shared_user_ids": true
       }
     }
   }
