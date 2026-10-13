@@ -223,8 +223,6 @@ def _prepare_delivery(
             )
             audit(conn, request_id, "expired", {})
             request["status"] = "expired"
-        else:
-            _check_actor(conn, request, request["actor_phone"])
 
     # Raise after committing the expiry update.
     if request["status"] == "expired":

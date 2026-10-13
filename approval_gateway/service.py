@@ -349,9 +349,32 @@ def _provision_verified_actor(
         )
         if approver["company"] not in {company, "all"}:
             raise ServiceError("Approver company scope mismatch.", 403)
-        _validate_workflow_binding(
-            actor, binding, _phone(approver["phone_number"])
-        )
+        if binding["source_user_id"] != actor.source_user_id:
+            raise ServiceError(
+                "Gateway binding does not match the verified ERP actor.", 403
+            )
+        if _phone(approver["phone_number"]) != phone:
+            # A contact change is not an identity change. Only the verified
+            # Directory actor may refresh this cache; never trust inbound phones.
+            if conn.execute(
+                """SELECT 1 FROM actor_bindings
+                   WHERE approver_id = ? AND directory_uuid != ?""",
+                (approver["id"], actor.directory_uuid),
+            ).fetchone():
+                raise ServiceError("Approver is shared by different identities.", 403)
+            if conn.execute(
+                """SELECT 1 FROM approvers a
+                   JOIN actor_bindings b ON b.approver_id = a.id
+                   WHERE a.phone_number = ? AND a.active = 1 AND b.active = 1
+                     AND b.directory_uuid != ?""",
+                (phone, actor.directory_uuid),
+            ).fetchone():
+                raise ServiceError("Verified phone conflicts with another identity.", 403)
+            conn.execute(
+                "UPDATE approvers SET phone_number = ?, updated_at = ? WHERE id = ?",
+                (phone, utc_now(), approver["id"]),
+            )
+            approver["phone_number"] = phone
         return binding, approver
 
     now = utc_now()
@@ -767,13 +790,51 @@ def verify_delivery_workflow(settings: Settings, task: dict[str, Any]) -> None:
     actor = _authorize_workflow(task["source_system"], data)
     if (
         actor.source_user_id != task["actor_user_id"]
-        or _phone(actor.phone_number) != task["actor_phone"]
         or json.loads(task["payload_json"]).get("_gateway_workflow")
         != _workflow_evidence(actor)
     ):
         raise ServiceError(
             "Queued task no longer matches the ERP workflow.", 409
         )
+    with connection(settings) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM approval_requests WHERE id = ?", (task["id"],)
+        ).fetchone()
+        if row is None:
+            raise ServiceError("Task is missing.", 404)
+        current = dict(row)
+        if (current["status"] != "pending"
+                or current["delivery_status"] not in {"pending", "sending"}):
+            raise ServiceError("Task is no longer eligible for delivery.", 409)
+        binding, approver = _assigned_actor(
+            conn, task["source_system"], task["company"], actor.directory_uuid
+        )
+        if (binding["id"] != current["actor_binding_id"]
+                or binding["source_user_id"] != actor.source_user_id
+                or approver["id"] != current["approver_id"]):
+            raise ServiceError("Actor binding revoked or changed.", 403)
+        phone = _phone(actor.phone_number)
+        if phone != current["actor_phone"]:
+            # Never retarget messages already sent or of unknown acceptance.
+            if (current["status"] != "pending"
+                    or current["delivery_status"] not in {"pending", "sending"}
+                    or current["whatsapp_message_id"]):
+                raise ServiceError("Delivered task contact changed; reissue required.", 409)
+        binding, approver = _provision_verified_actor(
+            conn, task["source_system"], task["company"], actor
+        )
+        if phone != current["actor_phone"]:
+            conn.execute(
+                "UPDATE approval_requests SET actor_phone = ?, updated_at = ? WHERE id = ?",
+                (phone, utc_now(), current["id"]),
+            )
+            audit(conn, current["id"], "verified_contact_refreshed", {
+                "directory_uuid": actor.directory_uuid,
+            })
+            current["actor_phone"] = phone
+        _check_actor(conn, current, phone)
+        task["actor_phone"] = phone
 
 
 def _check_actor(

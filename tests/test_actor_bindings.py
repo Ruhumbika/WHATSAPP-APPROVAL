@@ -110,5 +110,75 @@ class ActorBindingTests(unittest.TestCase):
         with connection(self.settings) as conn:
             conn.execute('UPDATE approvers SET active = 0 WHERE id = ?', (self.approver_id,))
         self.assert_decision_denied(request)
+    def test_directory_phone_change_refreshes_existing_binding(self):
+        self.workflow.phone = '255748507140'
+        task = self.new_request()
+        self.assertEqual(task['actor_phone'], self.workflow.phone)
+        self.assertEqual(task['actor_binding_id'], self.binding_id)
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM actor_bindings').fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT phone_number FROM approvers WHERE id=?', (self.approver_id,)).fetchone()[0], self.workflow.phone)
+
+    def test_queued_delivery_uses_current_directory_phone(self):
+        from unittest.mock import Mock
+        from approval_gateway.worker import _claim_delivery, _send_delivery
+        task = self.new_request()
+        self.workflow.phone = '255748507140'
+        claimed = _claim_delivery(self.settings)
+        client = Mock()
+        client.send_approval_request.return_value = 'wamid.new-phone'
+        _send_delivery(self.settings, client, claimed)
+        self.assertEqual(client.send_approval_request.call_args.args[0], self.workflow.phone)
+        stored = read_request(self.settings, 'test-peta-key', task['gateway_reference_id'])
+        self.assertEqual(stored['actor_phone'], self.workflow.phone)
+        self.assertEqual(stored['delivery_status'], 'simulated')
+        self.assert_decision_denied(task)
+
+    def test_directory_phone_change_still_rejects_changed_user_id(self):
+        self.workflow.phone = '255748507140'
+        self.workflow.source_user_id = '99'
+        with self.assertRaises(ServiceError):
+            self.new_request()
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute('SELECT phone_number FROM approvers WHERE id=?', (self.approver_id,)).fetchone()[0], self.phone)
+
+    def test_directory_phone_change_does_not_enable_disabled_binding(self):
+        with connection(self.settings) as conn:
+            conn.execute('UPDATE actor_bindings SET active=0 WHERE id=?', (self.binding_id,))
+        self.workflow.phone = '255748507140'
+        with self.assertRaises(ServiceError):
+            self.new_request()
+
+    def test_sent_task_cannot_be_retargeted(self):
+        from approval_gateway.service import verify_delivery_workflow
+        task = self.new_request()
+        with connection(self.settings) as conn:
+            conn.execute("UPDATE approval_requests SET delivery_status='sent', whatsapp_message_id='wamid.old' WHERE id=?", (task['id'],))
+            task = dict(conn.execute('SELECT * FROM approval_requests WHERE id=?', (task['id'],)).fetchone())
+        self.workflow.phone = '255748507140'
+        with self.assertRaises(ServiceError):
+            verify_delivery_workflow(self.settings, task)
+        self.assert_decision_denied(task)
+
+    def test_contact_refresh_does_not_hide_changed_workflow(self):
+        from approval_gateway.worker import _claim_delivery, _prepare_delivery
+        self.new_request()
+        self.workflow.phone = '255748507140'
+        self.workflow.record_digest = 'changed'
+        claimed = _claim_delivery(self.settings)
+        with self.assertRaises(ServiceError):
+            _prepare_delivery(self.settings, claimed['id'])
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute('SELECT phone_number FROM approvers WHERE id=?', (self.approver_id,)).fetchone()[0], self.phone)
+
+    def test_phone_conflict_with_another_identity_is_rejected(self):
+        new_phone = '255748507140'
+        with connection(self.settings) as conn:
+            other_id = conn.execute("INSERT INTO approvers (name, role, company, phone_number, active, created_at, updated_at) VALUES ('Other', 'reviewer', '77', ?, 1, 'now', 'now')", (new_phone,)).lastrowid
+            conn.execute("INSERT INTO actor_bindings (system_name, company, directory_uuid, source_user_id, approver_id, active) VALUES ('peta', '77', 'other-identity', '9', ?, 1)", (other_id,))
+        self.workflow.phone = new_phone
+        with self.assertRaises(ServiceError):
+            self.new_request()
+
 if __name__ == '__main__':
     unittest.main()
