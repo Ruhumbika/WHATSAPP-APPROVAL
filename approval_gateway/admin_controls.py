@@ -29,7 +29,7 @@ def read(settings):
         row = conn.execute('SELECT revision,values_json FROM gateway_controls WHERE id=1').fetchone()
     values = {'reminders_paused': False, 'reminder_hours': settings.workflow_reminder_hours,
               'reminder_limit': settings.workflow_reminder_limit,
-              'welcome': 'How can I help you?', 'support': 'Contact your PETA system administrator for assistance.'}
+              'welcome': 'How can I help you?', 'support': 'Contact your ERP service administrator for assistance.'}
     values.update(json.loads(row['values_json']))
     return row['revision'], values
 
@@ -66,7 +66,7 @@ def apply(settings, phone, inbound_id, key, value, expected_revision):
         values = json.loads(row['values_json'])
         defaults = {'reminders_paused': False, 'reminder_hours': settings.workflow_reminder_hours,
                     'reminder_limit': settings.workflow_reminder_limit, 'welcome': 'How can I help you?',
-                    'support': 'Contact your PETA system administrator for assistance.'}
+                    'support': 'Contact your ERP service administrator for assistance.'}
         old = values.get(key, defaults[key])
         values[key] = value
         revision = row['revision'] + 1

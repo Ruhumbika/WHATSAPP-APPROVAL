@@ -7,7 +7,7 @@ from .integrations.permissions import WorkflowDenied, IntegrationUnavailable
 from . import admin_controls as controls
 
 GUIDE = {
-    'pending_help': ('Pending approvals', 'Choose Pending approvals to see requests currently assigned to you. Select a request to review its summary and PDF. Type PENDING for a shortcut.'),
+    'pending_help': ('Pending approvals', 'Choose Pending approvals, then Oldest first or Newest first (by request creation date). Select a request for its summary and PDF. Back to pending keeps your order and page; Change order starts again. Shortcuts: PENDING OLD or PENDING NEW.'),
     'find_help': ('Find a request', 'Choose Find a request, then enter REQ 312 or PA 108 using the actual request ID. You can only view requests you are permitted to access.'),
     'decision_help': ('Approve or reject', 'Read the PDF before choosing Approve or Reject. Reject asks whether to return for correction or reject completely, then asks for a reason. Your reason is saved as a draft. Review it, then press Submit rejection. MENU pauses and saves your place; Cancel rejection keeps the request pending.'),
     'progress_help': ('Track progress', 'Use View progress on a notification, or type STATUS REQ 312 / STATUS PA 108. Completed documents are sent after the full approval workflow finishes.'),
@@ -251,9 +251,32 @@ def prepare(settings, job, command):
     if name in GUIDE:
         title, body = GUIDE[name]
         return page('*' + title.upper() + '*\n' + body, ('User guide', ui('guide')), back)
-    if name == 'support':
+    if name in ('support', 'support_service'):
+        from .service_context import discover, selected, GENERIC
+        from .inbox import clean
+        services, unavailable = discover(settings, phone)
+        service = selected(settings, phone, services)
+        if name == 'support_service':
+            service = next((s for s in services if s['system'] == command.get('system') and s['id'] == command.get('service_id')), None)
+            if service is None:
+                return page('Service access could not be verified. Please reopen Contact support.', back)
+        elif len(services) > 1:
+            return page('*CONTACT SUPPORT*\nWhich service do you need help with?',
+                        *[((str(s['id']) + ' · ' + clean(s['name'], 17))[:24],
+                           ui('support_service', system=s['system'], service_id=s['id'])) for s in services[:8]], back)
+        title = clean(service['name'], 100) if service else GENERIC
+        body = '*' + title + ' — SUPPORT*'
+        if service:
+            body += '\nContact your ' + clean(service['name'], 100) + ' administrator.\nA verified company support name/phone is not available yet.'
+        elif unavailable:
+            body += '\nService verification is temporarily unavailable. Please try again.'
+        else:
+            body += '\nWe could not identify your ERP service. Please contact your company IT support.'
         _, values = controls.read(settings)
-        return page('*SUPPORT*\n' + values['support'], back)
+        legacy = ('Contact your PETA system administrator for assistance.', 'Contact your ERP service administrator for assistance.')
+        if values['support'].strip() not in legacy:
+            body += '\n\nGroup support information:\n' + values['support']
+        return page(body, back)
     if name == 'find':
         set_session(settings, phone, ui('find'))
         body = 'Enter a request reference, for example REQ 312 or PA 108.\nUse the actual request ID.'

@@ -31,11 +31,19 @@ def init_schema(conn):
 
 
 def parse(text):
-    match = COMMAND.fullmatch(text.strip())
+    text = text.strip()
+    order = None
+    suffix = re.fullmatch(r'(PENDING.*?)\s+(OLD|NEW)', text, re.I)
+    if suffix:
+        text, order = suffix[1], ('oldest' if suffix[2].upper() == 'OLD' else 'newest')
+    match = COMMAND.fullmatch(text)
     if not match:
         return None
-    return {'kind': KINDS.get((match[3] or '').upper()), 'reference': match[4],
+    result = {'kind': KINDS.get((match[3] or '').upper()), 'reference': match[4],
             'company': match[1] or match[5], 'cursor': int(match[2] or 0)}
+    if order:
+        result['order'] = order
+    return result
 
 
 def guard_for(kind=None):
@@ -96,7 +104,7 @@ def identity(settings, phone, command, binding_id=None):
 def read_api(guard, binding, command):
     client = PetaClient(guard.peta.base_url, guard.peta.document_access_token,
                        allow_local_http=guard.peta.base_url.startswith('http://'), timeout_seconds=guard.peta.timeout_seconds)
-    query = urlencode({'actor_user_id': binding['source_user_id'], 'company_id': binding['company'], 'cursor': command['cursor']})
+    query = urlencode({'actor_user_id': binding['source_user_id'], 'company_id': binding['company'], 'cursor': command['cursor'], 'order': command.get('order', 'oldest')})
     path = 'whatsapp-approvals/inbox'
     if command['kind']:
         path += f"/{command['kind']}/{command['reference']}"
@@ -116,6 +124,8 @@ def read_api(guard, binding, command):
             raise WorkflowDenied('Inbox request mismatch')
         validate_item(data, binding)
     else:
+        if data.get('order') != command.get('order', 'oldest') or data.get('sort_basis') != 'created_at':
+            raise WorkflowDenied('Pending order is unavailable. The ERP inbox needs its latest update. Contact support.')
         if data.get('actor_user_id') != binding['source_user_id'] or not isinstance(data.get('items'), list) or len(data['items']) > 5:
             raise IntegrationUnavailable('Invalid inbox page')
         for item in data['items']:
@@ -158,18 +168,38 @@ def summary(item):
             f"Current: {clean(step.get('action'), 30)} {clean(step.get('position'), 50)}".rstrip())
 
 
+def age_label(item):
+    def duration(value):
+        try:
+            stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if stamp.tzinfo is None:
+                return None
+            seconds = (datetime.now(timezone.utc) - stamp).total_seconds()
+            if seconds < 0:
+                return None
+            hours = int(seconds // 3600)
+            return (f"{hours // 24}d" if hours >= 24 else f"{hours}h") if hours else '<1h'
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return None
+    created = duration(item.get('created_at'))
+    waiting = duration(item.get('waiting_since'))
+    text = f'Created {created} ago' if created else 'Created date unavailable'
+    return text + (f' · Waiting {waiting}' if waiting else '')
+
+
 def render_page(data, company):
     items = data['items']
-    body = '*YOUR PENDING APPROVALS*\nOldest requests first\n'
+    order = data['order']
+    body = '*PENDING — ' + ('OLDEST FIRST' if order == 'oldest' else 'NEWEST FIRST') + '*\nBy request creation date\n'
     for item in items:
-        body += f"\n*{label(item)}* · {clean(amount(item), 60)}\n{clean(item.get('purpose'), 60) or 'Purpose not recorded'}\n"
+        body += f"\n*{label(item)}* · {clean(amount(item), 60)}\n{clean(item.get('purpose'), 45) or 'Purpose not recorded'}\n{age_label(item)}\n"
     if not items:
         body += '\nNo approvals in this batch.' if data.get('next_cursor') is not None else '\nNo pending approvals found.'
     if items:
         body += f"\nOpen: {label(items[0])} C{company}"
     if data.get('next_cursor') is not None:
-        body += f"\nNext: PENDING C{company} NEXT {data['next_cursor']}"
-    body += f'\nRefresh: PENDING C{company}'
+        body += f"\nNext: PENDING C{company} NEXT {data['next_cursor']} {'OLD' if order == 'oldest' else 'NEW'}"
+    body += f"\nRefresh: PENDING C{company} {'OLD' if order == 'oldest' else 'NEW'}"
     return body
 
 
@@ -177,8 +207,8 @@ def handle_inbox(settings, response):
     from .service import ServiceError, decide
     if response.get('action') == 'inbox_decision':
         with connection(settings) as conn:
-            row = conn.execute("SELECT * FROM inbox_replies WHERE token=? AND status IN ('sent','simulated') AND task_id IS NOT NULL",
-                               (response.get('reference'),)).fetchone()
+            row = conn.execute("SELECT * FROM inbox_replies WHERE token=? AND status IN ('sent','simulated') AND task_id IS NOT NULL AND expires_at>?",
+                               (response.get('reference'), utc_now())).fetchone()
             if row is None or row['phone'] != response['phone'] or row['message_id'] != response.get('context_id'):
                 raise ServiceError('Unknown inbox action.', 403)
             job = dict(row)
@@ -246,13 +276,22 @@ def prepare(settings, job):
     # Pin the verified identity for retries, including phone reassignments.
     with connection(settings) as conn:
         conn.execute('UPDATE inbox_replies SET binding_id=? WHERE id=?', (binding['id'], job['id']))
+    if not command['kind'] and not command.get('order'):
+        from .chat_menu import page, ui
+        return page('*PENDING APPROVALS*\nChoose how to browse. Ordered by request creation date.',
+                    ('Oldest first', dict(command, order='oldest', cursor=0, company=binding['company'])),
+                    ('Newest first', dict(command, order='newest', cursor=0, company=binding['company'])),
+                    ('Main menu', ui('main')))
+    if command.get('order', 'oldest') not in ('oldest', 'newest'):
+        raise WorkflowDenied('Choose Oldest first or Newest first again.')
     data = read_api(guard, binding, command)
     identity(settings, job['phone'], command, binding['id'])
     if not command['kind']:
         from .chat_menu import page, ui
-        options = [(label(item), {'kind': item['kind'], 'reference': item['reference_id'], 'company': binding['company'], 'cursor': 0, 'preview': True}) for item in data['items']]
+        options = [(label(item), {'kind': item['kind'], 'reference': item['reference_id'], 'company': binding['company'], 'cursor': 0, 'preview': True, 'list_order': command['order'], 'list_cursor': command['cursor']}) for item in data['items']]
         if data.get('next_cursor') is not None:
             options.append(('Next page', dict(command, company=binding['company'], cursor=data['next_cursor'])))
+        options.append(('Change order', {'kind': None, 'reference': None, 'company': binding['company'], 'cursor': 0}))
         options.append(('Main menu', ui('main')))
         return page(render_page(data, binding['company']), *options)
     from .chat_menu import set_session
@@ -262,7 +301,8 @@ def prepare(settings, job):
     if command.get('preview'):
         from .chat_menu import page, ui
         return page(body, ('View document', dict(command, preview=False)),
-                    ('Next pending request', {'kind': None, 'reference': None, 'company': binding['company'], 'cursor': 0}),
+                    ('Back to pending', {'kind': None, 'reference': None, 'company': binding['company'],
+                     'cursor': command.get('list_cursor', 0), **({'order': command['list_order']} if command.get('list_order') else {})}),
                     ('Main menu', ui('main')))
 
     if not data['can_act']:
@@ -275,7 +315,7 @@ def prepare(settings, job):
     with connection(settings) as conn:
         task = conn.execute('''SELECT * FROM approval_requests WHERE source_system='peta' AND company=?
             AND request_type=? AND source_reference_id=? AND actor_directory_uuid=? AND step_id=?
-            AND actor_phone=? AND status='pending' AND delivery_status IN ('sent','simulated') AND expires_at>?
+            AND actor_phone=? AND status='pending' AND expires_at>?
             ORDER BY id DESC LIMIT 1''', (binding['company'], TYPES[command['kind']], command['reference'],
                 binding['directory_uuid'], actor.step_id, job['phone'], utc_now())).fetchone()
     from .service import _workflow_evidence

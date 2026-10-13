@@ -266,3 +266,32 @@ class ChatMenuTests(unittest.TestCase):
         with connection(self.settings) as conn:
             self.assertIsNone(conn.execute('SELECT rejection_draft FROM approval_requests').fetchone()[0])
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM callback_attempts').fetchone()[0], 0)
+
+    def test_support_uses_verified_service_and_hides_legacy_peta_default(self):
+        service = {'system':'other','id':15,'name':'MA CARGO'}
+        with connection(self.settings) as conn:
+            conn.execute('UPDATE gateway_controls SET values_json=?', (json.dumps({'support':'Contact your PETA system administrator for assistance.'}),))
+        with patch('approval_gateway.service_context.discover', return_value=([service], False)):
+            self.send('MENU')
+            self.click('Contact support')
+        body = self.client.send_menu.call_args.args[1]
+        self.assertIn('MA CARGO', body)
+        self.assertNotIn('PETA', body)
+        self.assertIn('not available yet', body)
+
+    def test_support_multiple_services_and_revoked_choice(self):
+        services = [{'system':'peta','id':14,'name':'PETA HOLDING'}, {'system':'other','id':15,'name':'MA CARGO'}]
+        with patch('approval_gateway.service_context.discover', return_value=(services, False)):
+            self.send('MENU')
+            self.click('Contact support')
+        with patch('approval_gateway.service_context.discover', return_value=([], False)):
+            self.click('15 · MA CARGO')
+        self.assertIn('could not be verified', self.client.send_menu.call_args.args[1])
+
+    def test_support_unknown_number_has_group_heading(self):
+        with patch('approval_gateway.service_context.discover', return_value=([], False)):
+            self.send('MENU')
+            self.click('Contact support')
+        body = self.client.send_menu.call_args.args[1]
+        self.assertIn('ABOOD GROUP OF COMPANIES', body)
+        self.assertNotIn('PETA', body)

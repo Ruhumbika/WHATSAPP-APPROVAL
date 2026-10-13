@@ -38,20 +38,20 @@ class InboxTests(unittest.TestCase):
                      'can_act': True, 'status': 'In progress', 'purpose': 'Office equipment',
                      'requester': 'Creator', 'amounts': {'TZS': '450,000.00'}, 'completed_steps': 0, 'total_steps': 6,
                      'current_step': {'id': '10', 'action': 'CHECK', 'position': 'Director'}}
-        self.page = {'company': '77', 'actor_user_id': '42', 'items': [self.item], 'next_cursor': 5}
+        self.page = {'company': '77', 'actor_user_id': '42', 'items': [self.item], 'next_cursor': 5, 'order': 'oldest', 'sort_basis': 'created_at'}
         p = patch('approval_gateway.inbox.PetaClient._get', side_effect=lambda path: {'success': True, 'data': copy.deepcopy(self.item if '/inbox/' in path else self.page)})
         p.start(); self.addCleanup(p.stop)
         self.client = Mock()
         self.client.send_text.return_value = 'wamid.inbox'
         self.client.send_menu.return_value = 'wamid.menu'
         self.client.send_inbox_document.return_value = 'wamid.document'
-        self.reply = {'action': 'conversation', 'text': 'PENDING', 'phone': self.phone, 'message_id': 'inbox-1', 'timestamp': str(int(time.time()))}
+        self.reply = {'action': 'conversation', 'text': 'PENDING OLD', 'phone': self.phone, 'message_id': 'inbox-1', 'timestamp': str(int(time.time()))}
 
     def jobs(self):
         with connection(self.settings) as conn:
             return [dict(r) for r in conn.execute('SELECT * FROM inbox_replies ORDER BY id')]
 
-    def run_command(self, text='PENDING'):
+    def run_command(self, text='PENDING OLD'):
         self.reply['text'] = text
         handle_inbox(self.settings, self.reply)
         process_inbox(self.settings, self.client, 5)
@@ -192,7 +192,7 @@ class InboxTests(unittest.TestCase):
         self.run_command()
         self.assertIn('Select a company', self.client.send_text.call_args.args[1])
         self.reply['message_id'] = 'inbox-2'
-        self.run_command('PENDING C77')
+        self.run_command('PENDING C77 OLD')
         self.assertIn('REQ 9', self.client.send_menu.call_args.args[1])
 
     def test_phone_change_during_document_preparation_prevents_send(self):
@@ -262,3 +262,86 @@ class InboxTests(unittest.TestCase):
     def test_typing_failure_does_not_block_reply(self):
         self.client.send_typing.side_effect = RuntimeError('Transient typing failure')
         self.assertEqual(self.run_command()['status'], 'simulated')
+
+    def click_menu(self, title, inbound):
+        from approval_gateway.chat_menu import handle
+        parent = self.jobs()[-1]
+        options = json.loads(parent['actions_json'])
+        index = next(i for i, option in enumerate(options) if option['title'] == title)
+        handle(self.settings, dict(self.reply, action='menu', reference=parent['token'],
+               context_id=parent['message_id'], menu_index=index, message_id=inbound))
+        process_inbox(self.settings, self.client, 5)
+        return self.jobs()[-1]
+
+    def test_pending_opens_order_chooser_before_loading_records(self):
+        with patch('approval_gateway.inbox.read_api') as api:
+            self.run_command('PENDING')
+        api.assert_not_called()
+        self.assertEqual([o['title'] for o in json.loads(self.jobs()[-1]['actions_json'])],
+                         ['Oldest first', 'Newest first', 'Main menu'])
+
+    def test_newest_pagination_and_summary_return_keep_order(self):
+        self.page['order'] = 'newest'
+        self.run_command('PENDING')
+        self.click_menu('Newest first', 'order-new')
+        self.assertIn('NEWEST FIRST', self.client.send_menu.call_args.args[1])
+        self.page['next_cursor'] = None
+        self.click_menu('Next page', 'page-two')
+        self.assertEqual(json.loads(self.jobs()[-1]['command_json'])['cursor'], 5)
+        self.page['next_cursor'] = None
+        self.click_menu('REQ 9', 'summary')
+        self.click_menu('Back to pending', 'back')
+        command = json.loads(self.jobs()[-1]['command_json'])
+        self.assertEqual((command['order'], command['cursor']), ('newest', 5))
+        self.click_menu('Change order', 'change-order')
+        self.page['order'] = 'oldest'
+        self.click_menu('Oldest first', 'order-old')
+        command = json.loads(self.jobs()[-1]['command_json'])
+        self.assertEqual((command['order'], command['cursor']), ('oldest', 0))
+
+    def test_explicit_shortcuts_and_api_order_contract(self):
+        self.assertEqual(parse('PENDING C77 NEXT 5 NEW')['order'], 'newest')
+        self.assertEqual(parse('pending old')['order'], 'oldest')
+        self.assertIsNone(parse('REQ 9 NEW'))
+        from approval_gateway.inbox import read_api
+        binding = {'source_user_id':'42', 'company':'77'}
+        self.page['order'] = 'newest'
+        with patch('approval_gateway.inbox.PetaClient._get', return_value={'success':True,'data':self.page}) as get:
+            read_api(self.guard, binding, parse('PENDING NEW'))
+            self.assertIn('order=newest', get.call_args.args[0])
+        self.page.pop('order')
+        with self.assertRaises(WorkflowDenied):
+            read_api(self.guard, binding, parse('PENDING NEW'))
+
+    def test_created_age_is_never_labelled_as_waiting(self):
+        from approval_gateway.inbox import age_label, render_page
+        from datetime import datetime, timedelta, timezone
+        ago = (datetime.now(timezone.utc)-timedelta(days=3, hours=1)).isoformat()
+        self.assertEqual(age_label({'created_at':ago}), 'Created 3d ago')
+        self.assertEqual(age_label({'created_at':ago,'waiting_since':ago}), 'Created 3d ago · Waiting 3d')
+        self.assertEqual(age_label({'created_at':'bad','waiting_since':'bad'}), 'Created date unavailable')
+        item = dict(self.item, reference_id='9999999999', purpose='x'*140,
+                    amounts={'TZS':'9'*28,'USD':'9'*28,'EUR':'9'*28},created_at=ago,waiting_since=ago)
+        page = dict(self.page, items=[item]*5)
+        self.assertLessEqual(len(render_page(page, '9999999999')), 1024)
+
+    def test_search_supplies_actions_for_current_undelivered_task(self):
+        with connection(self.settings) as conn:
+            conn.execute("UPDATE approval_requests SET delivery_status='pending',whatsapp_message_id=NULL WHERE id=?", (self.task['id'],))
+        job = self.run_command('REQ 9')
+        self.assertEqual(job['task_id'], self.task['id'])
+        self.client.send_inbox_document.assert_called_once()
+        self.assertTrue(handle_inbox(self.settings, self.button())['processed'])
+
+    def test_search_does_not_invent_task_and_expired_search_buttons_fail(self):
+        self.run_command('REQ 9')
+        with connection(self.settings) as conn:
+            conn.execute("UPDATE inbox_replies SET expires_at='2000-01-01T00:00:00+00:00'")
+        with self.assertRaises(ServiceError):
+            handle_inbox(self.settings, self.button())
+        with connection(self.settings) as conn:
+            conn.execute("UPDATE approval_requests SET status='cancelled' WHERE id=?", (self.task['id'],))
+        self.reply['message_id'] = 'search-again'
+        self.client.send_inbox_document.reset_mock()
+        self.run_command('REQ 9')
+        self.client.send_inbox_document.assert_not_called()
