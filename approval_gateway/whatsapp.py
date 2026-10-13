@@ -299,6 +299,21 @@ class WhatsAppClient:
             return "dry-run-document"
         return self._message_id(self._post_graph(payload))
 
+    def send_inbox_document(self, phone, body, document, token):
+        # Free-form interactive response to a verified inbound message only.
+        if not re.fullmatch(r"IBX-[A-F0-9]{32}", token):
+            raise ValueError("Invalid inbox token")
+        payload = {"messaging_product": "whatsapp", "to": normalize_phone(phone), "type": "interactive",
+            "interactive": {"type": "button", "header": {"type": "document", "document": {
+                "id": document["document_media_id"], "filename": document["document_filename"]}},
+                "body": {"text": _text(body, "body", 1024)},
+                "action": {"buttons": [
+                    {"type": "reply", "reply": {"id": f"inbox_{action}_{token}", "title": title}}
+                    for action, title in (("approve", "Approve"), ("reject", "Reject"))]}}}
+        if self.settings.dry_run_whatsapp:
+            return "dry-run-inbox-" + token
+        return self._message_id(self._post_graph(payload))
+
     def send_rejection_choices(self, phone: str, body: str, reference: str) -> str:
         # Called only for a verified inbound rejection inside its reply window.
         if not re.fullmatch(r"AGR-[A-Z0-9]{1,96}", reference):

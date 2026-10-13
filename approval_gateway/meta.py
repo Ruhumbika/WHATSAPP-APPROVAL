@@ -152,6 +152,15 @@ def extract_responses(
 
                 original_text, is_button = content
 
+                inbox = re.fullmatch(r"inbox_(approve|reject)_(IBX-[A-F0-9]{32})", original_text) if is_button else None
+                if inbox:
+                    yield {
+                        "action": "inbox_decision", "decision": "approved" if inbox[1] == "approve" else "rejected",
+                        "reference": inbox[2], "context_id": context_id, "phone": phone,
+                        "message_id": message_id, "text": inbox[1], "timestamp": message.get("timestamp"),
+                    }
+                    continue
+
                 workflow = re.fullmatch(r"workflow_(progress|request)_(WNF-[A-F0-9]{32})", original_text) if is_button else None
                 if workflow:
                     yield {

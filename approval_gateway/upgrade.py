@@ -197,4 +197,6 @@ def migrate(settings: Settings) -> None:
 
         from .workflow_notifications import init_schema
         init_schema(conn)
+        from .inbox import init_schema as init_inbox_schema
+        init_inbox_schema(conn)
         _backfill_delivery_state(conn)
