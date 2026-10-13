@@ -215,4 +215,6 @@ def migrate(settings: Settings) -> None:
         init_inbox_schema(conn)
         from .chat_menu import init_schema as init_chat_schema
         init_chat_schema(conn)
+        from .rejection_flow import init_schema as init_flow_schema
+        init_flow_schema(conn)
         _backfill_delivery_state(conn)

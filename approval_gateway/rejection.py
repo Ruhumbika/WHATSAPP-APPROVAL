@@ -16,6 +16,8 @@ CHOICE_PROMPT = (
 
 
 def _prompt(conn, task, response, body, now, review_token=None):
+    # Any chat edit/cancel/resume invalidates forms opened against an older draft.
+    conn.execute("UPDATE rejection_flows SET state='invalidated' WHERE task_id=? AND state='open'", (task["id"],))
     expires = (
         datetime.fromisoformat(now) + timedelta(hours=23, minutes=55)
     ).isoformat()

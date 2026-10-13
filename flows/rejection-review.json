@@ -1,0 +1,26 @@
+{
+  "version": "6.3",
+  "screens": [{
+    "id": "REJECTION_FORM",
+    "title": "Rejection draft",
+    "terminal": true,
+    "success": true,
+    "data": {"request_label": {"type": "string", "__example__": "REQ 312"}},
+    "layout": {"type": "SingleColumnLayout", "children": [{
+      "type": "Form", "name": "rejection", "children": [
+        {"type": "TextHeading", "text": "${data.request_label}"},
+        {"type": "TextBody", "text": "Choose an action and explain why. You will confirm your draft in chat before it is submitted."},
+        {"type": "RadioButtonsGroup", "name": "mode", "label": "Action", "required": true,
+          "data-source": [
+            {"id": "correction", "title": "Return for correction", "description": "The requester can edit and resubmit."},
+            {"id": "final", "title": "Reject completely", "description": "End this approval workflow."}
+          ]},
+        {"type": "TextArea", "name": "reason", "label": "Reason", "required": true,
+          "max-length": 2000, "helper-text": "Write 3–2000 characters."},
+        {"type": "Footer", "label": "Review rejection", "on-click-action": {
+          "name": "complete", "payload": {"mode": "${form.mode}", "reason": "${form.reason}"}
+        }}
+      ]
+    }]}
+  }]
+}

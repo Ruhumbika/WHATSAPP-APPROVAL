@@ -307,6 +307,20 @@ class WhatsAppClient:
         self._post_graph({"messaging_product": "whatsapp", "status": "read",
                           "message_id": message_id, "typing_indicator": {"type": "text"}}, timeout=2)
 
+    def send_rejection_flow(self, phone, body, token, request_label):
+        if not self.settings.whatsapp_rejection_flow_enabled or not re.fullmatch(r"RFL-[A-F0-9]{32}", token):
+            raise ValueError("Rejection Flow unavailable")
+        payload = {"messaging_product": "whatsapp", "to": normalize_phone(phone), "type": "interactive",
+            "interactive": {"type": "flow", "body": {"text": _text(body, "body", 1024)},
+                "action": {"name": "flow", "parameters": {
+                    "flow_message_version": "3", "mode": "published",
+                    "flow_id": self.settings.whatsapp_rejection_flow_id, "flow_token": token,
+                    "flow_cta": "Open rejection form", "flow_action": "navigate",
+                    "flow_action_payload": {"screen": "REJECTION_FORM", "data": {"request_label": request_label}}}}}}
+        if self.settings.dry_run_whatsapp:
+            return "dry-run-flow-" + token
+        return self._message_id(self._post_graph(payload))
+
     def send_menu(self, phone, body, options, token):
         if not re.fullmatch(r"IBX-[A-F0-9]{32}", token) or not 1 <= len(options) <= 10:
             raise ValueError("Invalid menu")

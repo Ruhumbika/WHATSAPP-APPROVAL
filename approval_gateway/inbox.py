@@ -334,7 +334,9 @@ def process_inbox(settings, client, limit):
                 status = 'expired'
             else:
                 dispatching = True
-                if document and 'menu_options' in document:
+                if document and 'flow_token' in document:
+                    message_id = client.send_rejection_flow(job['phone'], body, document['flow_token'], document['request_label'])
+                elif document and 'menu_options' in document:
                     with connection(settings) as conn:
                         conn.execute('UPDATE inbox_replies SET actions_json=? WHERE id=?', (json.dumps(document['menu_options']), job['id']))
                     message_id = client.send_menu(job['phone'], body, document['menu_options'], job['token'])

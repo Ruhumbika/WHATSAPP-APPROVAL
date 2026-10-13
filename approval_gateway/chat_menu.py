@@ -243,7 +243,7 @@ def prepare(settings, job, command):
             options.append(('Admin controls', ui('admin_help')))
         return page('*USER GUIDE*\nChoose a topic. HELP is available at any time.', *options, back)
     if name == 'resume_help':
-        return page('Main menu pauses without deleting your rejection draft. Choose Resume rejection to continue here. Sending a reason saves a draft; only Submit rejection sends it. Cancel rejection keeps the request pending. Drafts expire with the rejection session or task.',
+        return page('Main menu pauses without deleting your rejection draft. Choose Resume rejection to continue here. Sending a reason saves a draft; only Submit rejection sends it. Cancel rejection keeps the request pending. Drafts expire with the rejection session or task. When enabled, Open rejection form lets you choose an action and enter a reason together. Review rejection returns a draft to chat; Submit rejection is still required. If the form cannot open, use Continue rejection.',
                     ('Resume rejection', ui('rejections')), ('User guide', ui('guide')), back)
     if name == 'admin_help':
         return page('Admin controls are available from Main menu or the ADMIN shortcut. Change reminders, welcome/support text, view queues and recent changes. Settings apply across gateway companies and require confirmation. Admin access does not grant approval permissions.',
@@ -259,7 +259,7 @@ def prepare(settings, job, command):
         body = 'Enter a request reference, for example REQ 312 or PA 108.\nUse the actual request ID.'
         if command.get('invalid'): body = 'That reference was not recognized.\n\n' + body
         return page('*FIND A REQUEST*\n' + body, ('User guide', ui('find_help')), back)
-    if name in ('exit', 'context_help', 'resume', 'leave', 'rejections', 'rejection_view'):
+    if name in ('exit', 'context_help', 'resume', 'leave', 'rejections', 'rejection_view', 'rejection_form'):
         active = rejection(settings, phone)
         reference = command.get('task')
         if not reference:
@@ -283,6 +283,9 @@ def prepare(settings, job, command):
         command['_rejection_reference'] = reference
         with connection(settings) as conn:
             conn.execute('UPDATE inbox_replies SET command_json=? WHERE id=?', (json.dumps(command), job['id']))
+        if name == 'rejection_form':
+            from .rejection_flow import prepare
+            return prepare(settings, job, task)
         if name == 'rejection_view':
             from .inbox import prepare as prepare_inbox
             source_id = re.sub(r'^(REQ|PA)[ -]*', '', task['source_reference_id'], flags=re.I)
@@ -309,7 +312,8 @@ def prepare(settings, job, command):
         body = task_summary(task) + '\nAn unfinished rejection is saved. No decision has been submitted.'
         if name == 'context_help':
             body += '\nContinue to choose a rejection type, enter a reason or review your saved draft. Submit rejection is the final confirmation.'
-        return page(body, ('Continue rejection', ui('resume', task=reference)),
+        form = [('Open rejection form', ui('rejection_form', task=reference))] if settings.whatsapp_rejection_flow_enabled else []
+        return page(body, *form, ('Continue rejection', ui('resume', task=reference)),
                     ('View request', ui('rejection_view', task=reference)),
                     ('Cancel rejection', ui('leave', task=reference)), back,
                     ('User guide', ui('guide')))

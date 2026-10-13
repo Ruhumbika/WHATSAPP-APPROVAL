@@ -215,7 +215,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
                 from .inbox import handle_inbox
                 from .chat_menu import handle as handle_menu
-                result = handle_menu(settings, response)
+                from .rejection_flow import handle as handle_flow
+                result = handle_flow(settings, response)
+                if result is None:
+                    result = handle_menu(settings, response)
                 if result is None:
                     result = handle_inbox(settings, response)
                 if result is None:

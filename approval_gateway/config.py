@@ -135,6 +135,8 @@ class Settings:
     workflow_reminder_hours: int = 6
     workflow_reminder_limit: int = 3
     whatsapp_admin_phones: tuple[str, ...] = ()
+    whatsapp_rejection_flow_enabled: bool = False
+    whatsapp_rejection_flow_id: str = ""
 
 
 def _validate_settings(settings: Settings) -> None:
@@ -142,6 +144,8 @@ def _validate_settings(settings: Settings) -> None:
         raise ConfigurationError(
             "APP_ENV must be local, testing, or production."
         )
+    if settings.whatsapp_rejection_flow_enabled and not re.fullmatch(r"[0-9]{1,64}", settings.whatsapp_rejection_flow_id):
+        raise ConfigurationError("WHATSAPP_REJECTION_FLOW_ID must be a numeric published Flow ID when enabled.")
     required_text = {
         "APP_HOST": settings.host,
         "WHATSAPP_API_VERSION": settings.whatsapp_api_version,
@@ -263,6 +267,8 @@ def load_settings() -> Settings:
             "DRY_RUN_WHATSAPP",
             True,
         ),
+        whatsapp_rejection_flow_enabled=_get_bool(values, "WHATSAPP_REJECTION_FLOW_ENABLED", False),
+        whatsapp_rejection_flow_id=values.get("WHATSAPP_REJECTION_FLOW_ID", "").strip(),
         whatsapp_admin_phones=_admin_phones(values.get("WHATSAPP_ADMIN_PHONES", "")),
         workflow_notifications_enabled=_get_bool(values, "WORKFLOW_NOTIFICATIONS_ENABLED", False),
         workflow_reminder_hours=_get_int(values, "WORKFLOW_REMINDER_HOURS", 6, minimum=1, maximum=168),
