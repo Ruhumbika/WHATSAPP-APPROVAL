@@ -574,6 +574,11 @@ def _send_callback(
                     callback["id"],
                 ),
             )
+            if not retry:
+                row = conn.execute("SELECT * FROM approval_requests WHERE id=?", (callback["approval_request_id"],)).fetchone()
+                if row:
+                    from .notifications import enqueue_execution_failure
+                    enqueue_execution_failure(conn, dict(row), utc_now())
             audit(
                 conn,
                 callback["approval_request_id"],

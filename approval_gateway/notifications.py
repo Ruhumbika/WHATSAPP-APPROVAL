@@ -71,9 +71,9 @@ def enqueue_notification(
         )
     if kind == "received":
         if rejection and rejection["mode"] == "correction":
-            body = f"{company}\nYour request to return {label} {reference} for correction has been received. Processing is underway."
+            body = f"{company}\nYour request to return {label} {reference} for correction has been submitted. Waiting for PETA confirmation."
         else:
-            body = f"{company}\nYour decision to {verb} {label} {reference} has been received. Processing is underway."
+            body = f"{company}\nYour decision to {verb} {label} {reference} has been submitted. Waiting for PETA confirmation."
     elif kind == "result":
         if task["execution_status"] == "applied":
             if rejection:
@@ -101,6 +101,21 @@ def enqueue_notification(
     )
 
 
+
+def enqueue_execution_failure(conn, task, now):
+    if not task.get('responded_at'):
+        return
+    expires = (datetime.fromisoformat(task['responded_at']) + timedelta(hours=23, minutes=55)).isoformat()
+    if expires <= now:
+        return
+    body = (f"{_company_name(task)}\nCould not confirm your decision for request {task['source_reference_id']} with PETA. "
+            "Contact support to check its status before taking another action.")
+    conn.execute("""INSERT INTO decision_repeat_notifications
+        (approval_request_id,inbound_message_id,kind,phone,body,next_attempt_at,expires_at,created_at,updated_at)
+        VALUES (?,?,'received',?,?,?,?,?,?) ON CONFLICT(inbound_message_id) DO NOTHING""",
+        (task['id'], 'callback-failure-' + str(task['id']), task['actor_phone'], body, now, expires, now, now))
+
+
 def enqueue_repeat_notification(conn, task, response, now):
     if task["status"] not in {"approved", "rejected"}:
         return
@@ -116,7 +131,9 @@ def enqueue_repeat_notification(conn, task, response, now):
     if task["execution_status"] == "applied":
         body = f"{prefix} because your decision to {first} it has already been applied at your assigned approval step."
     elif task["execution_status"] == "pending":
-        body = f"{prefix} because your decision to {first} it has already been recorded and is being processed."
+        failed = conn.execute("SELECT 1 FROM callback_attempts WHERE approval_request_id=? AND status='failed'", (task['id'],)).fetchone()
+        body = (f"{prefix} because your decision is already recorded. Could not confirm it with PETA; contact support."
+                if failed else f"{prefix} because your decision to {first} it has already been recorded. Waiting for PETA confirmation.")
     else:
         body = f"{prefix} because your decision to {first} it has already been recorded. It was not applied; please review the requisition in {company}."
     expires = (
@@ -202,6 +219,12 @@ def _process_queue(settings, client, limit, table):
                 payload = json.loads(notification["payload_json"])
                 if payload.get("type") == "rejection_choice":
                     message_id = client.send_rejection_choices(notification["phone"], notification["body"], payload["reference"])
+                elif payload.get("type") == "rejection_review":
+                    with connection(settings) as conn:
+                        current = conn.execute("SELECT * FROM approval_requests WHERE id=?", (notification["approval_request_id"],)).fetchone()
+                    if current["status"] != "pending" or current["rejection_phase"] != "reason" or current["rejection_review_token"] != payload["token"] or current["rejection_expires_at"] <= utc_now():
+                        raise ValueError("Rejection review superseded")
+                    message_id = client.send_rejection_review(notification["phone"], notification["body"], payload["token"])
                 elif payload.get("type") == "progress" and payload["response"]["phone"] == notification["phone"]:
                     task, data, body = prepare_progress(settings, payload["response"])
                     if payload["response"].get("action") == "progress":

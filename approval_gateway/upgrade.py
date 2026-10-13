@@ -7,6 +7,9 @@ from .db import connection, utc_now
 
 # Fixed migration definitions; identifiers never come from request input.
 _REQUEST_COLUMNS = {
+    "rejection_draft": "TEXT",
+    "rejection_review_token": "TEXT",
+    "rejection_paused": "INTEGER NOT NULL DEFAULT 0",
     "decision_rejection_json": "TEXT",
     "rejection_phase": "TEXT NOT NULL DEFAULT 'closed' CHECK(rejection_phase IN ('choice','reason','closed'))",
     "rejection_mode": "TEXT CHECK(rejection_mode IN ('correction','final'))",

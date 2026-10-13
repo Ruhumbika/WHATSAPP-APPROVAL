@@ -280,6 +280,9 @@ def prepare(settings, job):
                                (task['id'], utc_now())).fetchone()
     if not current:
         raise WorkflowDenied('This approval task is no longer pending. Refresh your inbox.')
+    if command.get('read_only'):
+        document['read_only'] = True
+        return body + '\nViewing this PDF does not submit a decision. Send MENU to resume your rejection.', document, None
     return body + '\n\nReview the PDF before choosing an action.', document, task['id']
 
 
@@ -304,7 +307,9 @@ def process_inbox(settings, client, limit):
                 body, document, task_id = prepare(settings, job)
             except WorkflowDenied as exc:
                 body, document, task_id = str(exc), None, None
-            if job['expires_at'] <= utc_now():
+            if document and document.get('delegated'):
+                status = 'routed'
+            elif job['expires_at'] <= utc_now():
                 status = 'expired'
             else:
                 dispatching = True
@@ -312,6 +317,8 @@ def process_inbox(settings, client, limit):
                     with connection(settings) as conn:
                         conn.execute('UPDATE inbox_replies SET actions_json=? WHERE id=?', (json.dumps(document['menu_options']), job['id']))
                     message_id = client.send_menu(job['phone'], body, document['menu_options'], job['token'])
+                elif document and document.get('read_only'):
+                    message_id = client.send_document(job['phone'], document, body)
                 else:
                     message_id = (client.send_inbox_document(job['phone'], body, document, job['token'])
                                   if document else client.send_text(job['phone'], body))

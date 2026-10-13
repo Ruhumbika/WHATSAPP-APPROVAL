@@ -124,6 +124,7 @@ class RejectionLayoutTests(unittest.TestCase):
         decide(self.settings, response)
         self.assertEqual(self.callbacks(), [])
         self.send(task, 'conversation', 'Correct the quantities', 'reason')
+        rejection_baseline.confirm_review(self.settings, task, self.phone)
         self.assertEqual(self.callbacks()[0]['rejection']['mode'], 'correction')
 
 

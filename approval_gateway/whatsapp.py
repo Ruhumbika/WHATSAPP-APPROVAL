@@ -331,6 +331,21 @@ class WhatsAppClient:
             return "dry-run-inbox-" + token
         return self._message_id(self._post_graph(payload))
 
+    def send_rejection_review(self, phone, body, token):
+        if not re.fullmatch(r"RJC-[A-F0-9]{32}", token):
+            raise ValueError("Invalid rejection review token")
+        if len(body) > 1024:
+            self.send_text(phone, body)
+            body = "Review the full rejection reason in the message above. No decision has been submitted. Choose an action below."
+        payload = {"messaging_product": "whatsapp", "to": normalize_phone(phone), "type": "interactive",
+                   "interactive": {"type": "button", "body": {"text": _text(body, "body", 1024)},
+                                   "action": {"buttons": [
+                                       {"type": "reply", "reply": {"id": f"review_{action}_{token}", "title": title}}
+                                       for action, title in (("submit", "Submit rejection"), ("edit", "Edit reason"), ("cancel", "Cancel rejection"))]}}}
+        if self.settings.dry_run_whatsapp:
+            return "dry-run-review-" + token
+        return self._message_id(self._post_graph(payload))
+
     def send_rejection_choices(self, phone: str, body: str, reference: str) -> str:
         # Called only for a verified inbound rejection inside its reply window.
         if not re.fullmatch(r"AGR-[A-Z0-9]{1,96}", reference):

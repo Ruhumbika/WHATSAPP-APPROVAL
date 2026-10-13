@@ -1031,7 +1031,7 @@ def _commit_decision(
             from .rejection import consume_reason
             consume_reason(conn, request, response, now)
         else:
-            conn.execute("UPDATE approval_requests SET rejection_phase='closed', rejection_updated_at=? WHERE id=?", (now, request["id"]))
+            conn.execute("UPDATE approval_requests SET rejection_phase='closed', rejection_draft=NULL, rejection_updated_at=? WHERE id=?", (now, request["id"]))
         conn.execute("UPDATE decision_repeat_notifications SET status='expired',updated_at=? WHERE approval_request_id=? AND status='pending'", (now,request['id']))
         callback = _callback_payload(request, response, now)
 

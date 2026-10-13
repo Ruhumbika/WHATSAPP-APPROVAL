@@ -225,6 +225,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     result = handle_view(settings, response)
                 if result is None:
                     result = decide(settings, response)
+                if result.get("reason") in {"missing_or_ambiguous_rejection_context", "no_active_rejection_conversation", "task_no_longer_pending"}:
+                    from .inbox import enqueue_reply
+                    result = enqueue_reply(settings, response, {"ui": "recovery"})
                 results.append(result)
                 logger.info(
                     "WhatsApp decision processed=%s; reason=%s.",
@@ -242,12 +245,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 if exc.status >= 500:
                     raise
 
-                results.append(
-                    {
-                        "processed": False,
-                        "reason": str(exc),
-                    }
-                )
+                from .inbox import enqueue_reply
+                results.append(enqueue_reply(settings, response, {"ui": "recovery"}))
 
         logger.info("WhatsApp webhook acknowledged; HTTP 200.")
         self.reply({"ok": True, "results": results})

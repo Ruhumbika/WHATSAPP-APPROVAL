@@ -152,6 +152,14 @@ def extract_responses(
 
                 original_text, is_button = content
 
+                review = re.fullmatch(r"review_(submit|edit|cancel)_(RJC-[A-F0-9]{32})", original_text) if is_button else None
+                if review:
+                    yield {"action": "conversation", "review_action": review[1], "review_token": review[2],
+                           "reference": None, "context_id": context_id, "phone": phone,
+                           "message_id": message_id, "text": "Rejection review: " + review[1],
+                           "timestamp": message.get("timestamp")}
+                    continue
+
                 menu = re.fullmatch(r"menu_([0-9])_(IBX-[A-F0-9]{32})", original_text) if is_button else None
                 if menu:
                     yield {"action": "menu", "menu_index": int(menu[1]), "reference": menu[2],

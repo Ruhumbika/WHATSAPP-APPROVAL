@@ -125,9 +125,11 @@ class PaymentAdviceTests(unittest.TestCase):
         with connection(self.settings) as c:
             self.assertEqual(c.execute('SELECT COUNT(*) FROM callback_attempts').fetchone()[0], 0)
             prompt = c.execute('SELECT body FROM decision_repeat_notifications ORDER BY id DESC').fetchone()[0]
-        self.assertIn('Payment Advice', prompt)
+        self.assertIn('PA 9', prompt)
         self.reply(task, action='conversation', text='2')
         self.reply(task, action='conversation', text='Incorrect beneficiary details')
+        from test_rejection import confirm_review
+        confirm_review(self.settings, task, task['actor_phone'])
         with connection(self.settings) as c:
             payload = json.loads(c.execute('SELECT payload_json FROM callback_attempts').fetchone()[0])
         self.assertEqual(payload['request_type'], REQUEST_TYPE)
@@ -145,6 +147,8 @@ class PaymentAdviceTests(unittest.TestCase):
         self.reply(task, action='rejected', text='Reject')
         self.reply(task, action='conversation', text='1')
         self.reply(task, action='conversation', text='Correct the requested amount')
+        from test_rejection import confirm_review
+        confirm_review(self.settings, task, task['actor_phone'])
         with connection(self.settings) as c:
             payload = json.loads(c.execute('SELECT payload_json FROM callback_attempts').fetchone()[0])
         self.assertEqual(payload['rejection']['mode'], 'correction')

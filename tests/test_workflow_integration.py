@@ -203,7 +203,9 @@ class WorkflowIntegrationTests(unittest.TestCase):
     def reject_with_reason(self, task):
         self.reply(task, action="rejected", text="Reject")
         self.reply(task, action="conversation", text="2")
-        return self.reply(task, action="conversation", text="Wrong quantities")
+        self.reply(task, action="conversation", text="Wrong quantities")
+        from test_rejection import confirm_review
+        return confirm_review(self.settings, task, task['actor_phone'], str(uuid4()))
 
     def run_worker(self):
         with patch("approval_gateway.worker.WhatsAppClient") as client:
@@ -466,7 +468,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
             body = c.execute("SELECT body FROM decision_repeat_notifications").fetchone()[0]
         self.assertIn("You cannot reject", body)
         self.assertIn("decision to approve", body)
-        self.assertIn("is being processed", body)
+        self.assertIn("Waiting for PETA confirmation", body)
         self.assertNotIn("already been applied", body)
 
     def test_opposite_click_does_not_claim_rejected_execution_was_applied(self):

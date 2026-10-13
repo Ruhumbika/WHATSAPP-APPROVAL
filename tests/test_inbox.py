@@ -221,3 +221,27 @@ class InboxTests(unittest.TestCase):
         job = self.run_command()
         self.assertEqual(job['status'], 'pending')
         self.client.send_text.assert_not_called()
+
+    def test_rejection_pdf_view_is_read_only_and_preserves_draft(self):
+        from approval_gateway.chat_menu import handle
+        from approval_gateway.service import decide
+        decide(self.settings, dict(self.reply, action='rejected', reference=self.task['gateway_reference_id']))
+        decide(self.settings, dict(self.reply, action='conversation', text='1', message_id='choice',
+                                   reference=self.task['gateway_reference_id']))
+        decide(self.settings, dict(self.reply, action='conversation', text='Wrong price', message_id='reason',
+                                   reference=self.task['gateway_reference_id']))
+        handle(self.settings, dict(self.reply, text='HEY', message_id='hey'))
+        process_inbox(self.settings, self.client, 5)
+        parent = self.jobs()[-1]
+        options = json.loads(parent['actions_json'])
+        index = next(i for i,o in enumerate(options) if o['title'] == 'View request')
+        handle(self.settings, dict(self.reply, action='menu', reference=parent['token'], context_id='wamid.menu',
+                                   message_id='view', menu_index=index))
+        self.client.send_document.return_value = 'wamid.readonly'
+        process_inbox(self.settings, self.client, 5)
+        self.client.send_document.assert_called_once()
+        self.client.send_inbox_document.assert_not_called()
+        with connection(self.settings) as conn:
+            row = conn.execute('SELECT status,rejection_draft FROM approval_requests').fetchone()
+            self.assertEqual(tuple(row), ('pending', 'Wrong price'))
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM callback_attempts').fetchone()[0], 0)

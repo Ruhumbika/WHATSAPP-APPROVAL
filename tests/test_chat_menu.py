@@ -59,7 +59,7 @@ class ChatMenuTests(unittest.TestCase):
     def test_unknown_text_returns_main_without_decision(self):
         self.send('What can this assistant do?')
         options = json.loads(self.jobs()[-1]['actions_json'])
-        self.assertEqual([o['title'] for o in options], ['Pending approvals', 'Find a request', 'Help & more'])
+        self.assertEqual([o['title'] for o in options], ['Pending approvals', 'Find a request', 'User guide', 'Contact support', 'Admin controls'])
 
     def test_help_topics_and_find_validation(self):
         self.send('HELP')
@@ -74,7 +74,6 @@ class ChatMenuTests(unittest.TestCase):
     def test_public_more_has_no_admin_controls(self):
         self.settings = replace(self.settings, whatsapp_admin_phones=())
         self.send()
-        self.click('Help & more')
         self.assertNotIn('Admin controls', self.jobs()[-1]['actions_json'])
         self.send('ADMIN')
         self.assertIn('not enabled', self.client.send_menu.call_args.args[1])
@@ -128,12 +127,14 @@ class ChatMenuTests(unittest.TestCase):
         self.assertEqual(response['reference'], task['gateway_reference_id'])
         decide(self.settings, response)
         with connection(self.settings) as conn:
-            self.assertEqual(conn.execute('SELECT status FROM approval_requests').fetchone()[0], 'rejected')
+            self.assertEqual(conn.execute('SELECT status FROM approval_requests').fetchone()[0], 'pending')
+            self.assertEqual(conn.execute('SELECT rejection_draft FROM approval_requests').fetchone()[0], 'Wrong quantity supplied')
 
     def test_menu_during_rejection_requires_explicit_exit(self):
         self.begin_rejection()
         self.send('MENU')
-        self.assertIn('rejection is in progress', self.client.send_menu.call_args.args[1])
+        self.assertIn('unfinished rejection is saved', self.client.send_menu.call_args.args[1])
+        self.click('Resume rejection')
         self.click('Cancel rejection')
         with connection(self.settings) as conn:
             row = conn.execute('SELECT status,rejection_phase FROM approval_requests').fetchone()
@@ -146,8 +147,8 @@ class ChatMenuTests(unittest.TestCase):
         for change in ({'phone': '255700000000'}, {'context_id': 'wrong'}, {'menu_index': 9}):
             response = self.response(action='menu', reference=parent['token'], context_id=parent['message_id'], menu_index=0)
             response.update(change)
-            with self.assertRaises(ServiceError):
-                menu.handle(self.settings, response)
+            menu.handle(self.settings, response)
+            self.assertEqual(json.loads(self.jobs()[-1]['command_json'])['ui'], 'recovery')
 
     def test_menu_queue_dedup_expiry_and_rate_limit(self):
         response = self.response()
@@ -198,3 +199,70 @@ class ChatMenuTests(unittest.TestCase):
                 'interactive': {'type': kind, kind: reply}}]}}]}]}
             response = list(extract_responses(payload, expected_phone_number_id='123'))[0]
             self.assertEqual((response['action'], response['menu_index'], response['reference']), ('menu', 1, token))
+
+    def test_admin_discoverable_in_main_and_guide(self):
+        self.send('HEY')
+        self.assertIn('Admin controls', self.jobs()[-1]['actions_json'])
+        self.click('User guide')
+        self.click('Admin controls')
+        self.assertIn('does not grant approval', self.client.send_menu.call_args.args[1])
+        self.settings = replace(self.settings, whatsapp_admin_phones=())
+        self.send('HELP')
+        self.assertNotIn('Admin controls', self.jobs()[-1]['actions_json'])
+
+    def test_resume_choice_sends_new_choice_buttons(self):
+        from approval_gateway.notifications import process_notifications
+        task = baseline.GatewayTests.new_request(self)
+        decide(self.settings, self.response(action='rejected', reference=task['gateway_reference_id']))
+        self.send('HEY')
+        self.click('Continue rejection')
+        self.client.send_rejection_choices.return_value = 'wamid.new-choice'
+        process_notifications(self.settings, self.client, 25)
+        self.client.send_rejection_choices.assert_called_once()
+        self.assertEqual(self.client.send_rejection_choices.call_args.args[2], task['gateway_reference_id'])
+        self.assertNotIn('original rejection prompt', self.client.send_menu.call_args.args[1])
+
+    def test_main_menu_pauses_and_resume_restores_reason(self):
+        task = self.begin_rejection()
+        decide(self.settings, self.response('Wrong price', reference=task['gateway_reference_id']))
+        self.send('MENU')
+        self.send('Just checking the menu')
+        with connection(self.settings) as conn:
+            row = conn.execute('SELECT * FROM approval_requests').fetchone()
+        self.assertEqual(row['rejection_draft'], 'Wrong price')
+        self.assertEqual(row['rejection_paused'], 1)
+        self.click('Resume rejection')
+        self.click('Continue rejection')
+        with connection(self.settings) as conn:
+            row = conn.execute('SELECT * FROM approval_requests').fetchone()
+            payloads = [json.loads(r[0]) for r in conn.execute("SELECT payload_json FROM decision_repeat_notifications WHERE status='pending'")]
+        self.assertEqual(row['rejection_paused'], 0)
+        self.assertEqual(row['rejection_draft'], 'Wrong price')
+        self.assertTrue(any(p['type'] == 'rejection_review' for p in payloads))
+
+    def test_resume_rechecks_changed_assignment(self):
+        self.begin_rejection()
+        self.workflow.record_digest = 'changed'
+        self.send('HEY')
+        self.assertIn('assignment changed', self.client.send_menu.call_args.args[1])
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM callback_attempts').fetchone()[0], 0)
+
+    def test_multiple_rejections_offer_selection(self):
+        first = self.begin_rejection()
+        self.workflow.record_digest = '2'
+        self.data['workflow_version'] = '2'
+        other = baseline.GatewayTests.new_request(self)
+        decide(self.settings, self.response(action='rejected', reference=other['gateway_reference_id']))
+        self.send('HEY')
+        options = json.loads(self.jobs()[-1]['actions_json'])
+        self.assertEqual({o['command'].get('task') for o in options if o['command'].get('task')},
+                         {first['gateway_reference_id'], other['gateway_reference_id']})
+
+    def test_context_help_never_saves_help_as_reason(self):
+        self.begin_rejection()
+        self.send('HELP')
+        self.send('HEY')
+        with connection(self.settings) as conn:
+            self.assertIsNone(conn.execute('SELECT rejection_draft FROM approval_requests').fetchone()[0])
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM callback_attempts').fetchone()[0], 0)

@@ -3,13 +3,13 @@ from datetime import datetime, timedelta, timezone
 import json
 import re
 from .db import connection, utc_now
-from .integrations.permissions import WorkflowDenied
+from .integrations.permissions import WorkflowDenied, IntegrationUnavailable
 from . import admin_controls as controls
 
 GUIDE = {
     'pending_help': ('Pending approvals', 'Choose Pending approvals to see requests currently assigned to you. Select a request to review its summary and PDF. Type PENDING for a shortcut.'),
     'find_help': ('Find a request', 'Choose Find a request, then enter REQ 312 or PA 108 using the actual request ID. You can only view requests you are permitted to access.'),
-    'decision_help': ('Approve or reject', 'Read the PDF before choosing Approve or Reject. Reject asks whether to return for correction or reject completely, then asks for a reason. Sending the reason submits that rejection. CANCEL keeps the request pending.'),
+    'decision_help': ('Approve or reject', 'Read the PDF before choosing Approve or Reject. Reject asks whether to return for correction or reject completely, then asks for a reason. Your reason is saved as a draft. Review it, then press Submit rejection. MENU pauses and saves your place; Cancel rejection keeps the request pending.'),
     'progress_help': ('Track progress', 'Use View progress on a notification, or type STATUS REQ 312 / STATUS PA 108. Completed documents are sent after the full approval workflow finishes.'),
 }
 
@@ -51,8 +51,13 @@ def set_session(settings, phone, state):
 def rejection(settings, phone):
     with connection(settings) as conn:
         rows = [dict(r) for r in conn.execute('''SELECT * FROM approval_requests WHERE actor_phone=? AND status='pending'
-            AND rejection_phase IN ('choice','reason') AND rejection_expires_at>? AND expires_at>? LIMIT 2''', (phone, utc_now(), utc_now()))]
+            AND rejection_phase IN ('choice','reason') AND rejection_expires_at>? AND expires_at>? ORDER BY id DESC LIMIT 100''', (phone, utc_now(), utc_now()))]
     return rows
+
+
+def pause(settings, phone):
+    with connection(settings) as conn:
+        conn.execute("UPDATE approval_requests SET rejection_paused=1 WHERE actor_phone=? AND status='pending' AND rejection_phase!='closed'", (phone,))
 
 
 def handle(settings, response):
@@ -62,35 +67,48 @@ def handle(settings, response):
     action = response.get('action')
     text = response.get('text', '').strip()
     upper = text.upper()
-    command = None
+    active = rejection(settings, response['phone'])
+    if response.get('review_action'):
+        return None
     if action == 'menu':
         with connection(settings) as conn:
             parent = conn.execute("SELECT * FROM inbox_replies WHERE token=? AND phone=? AND message_id=? AND status IN ('sent','simulated') AND expires_at>?",
                 (response.get('reference'), response.get('phone'), response.get('context_id'), utc_now())).fetchone()
         if parent is None:
-            raise ServiceError('Menu expired or unavailable. Send MENU for a fresh menu.', 403)
+            return enqueue_reply(settings, response, ui('recovery'))
         options = json.loads(parent['actions_json'] or '[]')
         index = response.get('menu_index')
         if type(index) is not int or not 0 <= index < len(options):
-            raise ServiceError('Invalid menu selection.', 403)
+            return enqueue_reply(settings, response, ui('recovery'))
         command = options[index]['command']
-        # All admin selections must be authorized again, even from an old menu.
         if command.get('ui', '').startswith('admin') and not controls.is_admin(settings, response['phone']):
             command = ui('denied')
     elif action not in ('conversation', None):
         return None
     elif upper in ('HELP', 'GUIDE', 'USER MANUAL', 'MANUAL'):
-        command = ui('guide')
-    elif upper in ('MENU', 'HI', 'HELLO', 'START'):
-        command = ui('main')
+        command = ui('context_help') if any(not t['rejection_paused'] for t in active) else ui('guide')
+    elif upper in ('MENU', 'HI', 'HEY', 'HELLO', 'START'):
+        command = ui('exit') if active and upper != 'MENU' else ui('main')
     elif upper == 'ADMIN':
         command = ui('admin') if controls.is_admin(settings, response['phone']) else ui('denied')
     elif parse(text) is not None or PROGRESS.fullmatch(text):
+        pause(settings, response['phone'])
         return None
     else:
-        active = rejection(settings, response['phone'])
-        # Requested free-text reasons belong to the existing rejection state machine.
-        if active:
+        state = session(settings, response['phone'])
+        if state and state['ui'] == 'find':
+            command = ui('main') if upper == 'CANCEL' else ui('find', invalid=True)
+        elif state and state['ui'] == 'admin_text':
+            if upper == 'CANCEL':
+                command = ui('admin')
+            elif not controls.is_admin(settings, response['phone']):
+                command = ui('denied')
+            elif 3 <= len(text) <= 300:
+                command = ui('admin_propose', key=state['key'], value=text)
+            else:
+                command = ui('admin_text', key=state['key'], invalid=True)
+        elif response.get('reference') or response.get('context_id') or any(not t['rejection_paused'] for t in active):
+            # Direct task replies still use the original actor and workflow checks.
             if response.get('context_id') and not response.get('reference'):
                 with connection(settings) as conn:
                     prompt = conn.execute("""SELECT command_json FROM inbox_replies
@@ -101,35 +119,50 @@ def handle(settings, response):
                     response['reference'] = reference
                     response['context_id'] = None
             return None
-        state = session(settings, response['phone'])
-        if upper == 'CANCEL':
-            command = ui('main')
-        elif state and state['ui'] == 'find':
-            command = ui('find', invalid=True)
-        elif state and state['ui'] == 'admin_text':
-            if not controls.is_admin(settings, response['phone']):
-                command = ui('denied')
-            elif 3 <= len(text) <= 300:
-                command = ui('admin_propose', key=state['key'], value=text)
-            else:
-                command = ui('admin_text', key=state['key'], invalid=True)
         else:
             command = ui('main')
-    active = rejection(settings, response['phone'])
-    if active and command.get('ui') not in ('guide', 'resume', 'leave', 'exit', 'denied', *GUIDE):
-        command = ui('exit')
-    if command.get('ui') == 'guide' and active:
-        command = ui('context_help')
-    if command.get('ui') == 'leave':
-        # Cancellation runs normal task/actor/ERP checks; never abandon all tasks.
-        if len(active) != 1 or active[0]['gateway_reference_id'] != command.get('task'):
-            command = ui('main')
-        else:
-            from .service import decide
-            return decide(settings, dict(response, action='conversation', text='CANCEL',
-                reference=active[0]['gateway_reference_id'], context_id=None))
+    if command.get('ui') not in ('resume', 'leave', 'context_help', 'exit', 'rejections', 'rejection_view'):
+        pause(settings, response['phone'])
     return enqueue_reply(settings, response, command)
 
+
+def verified_task(settings, phone, reference):
+    from .service import _preflight_decision, ServiceError
+    with connection(settings) as conn:
+        row = conn.execute("SELECT * FROM approval_requests WHERE gateway_reference_id=? AND actor_phone=?", (reference, phone)).fetchone()
+    if not row or row['status'] != 'pending' or row['expires_at'] <= utc_now() or row['rejection_phase'] == 'closed' or not row['rejection_expires_at'] or row['rejection_expires_at'] <= utc_now():
+        raise WorkflowDenied('This rejection is no longer available. Open Pending approvals for current requests.')
+    task = dict(row)
+    try:
+        _preflight_decision(settings, {'reference': reference, 'context_id': None, 'phone': phone, 'action': 'rejected', 'message_id': 'resume-check-' + reference}, phone)
+    except ServiceError as exc:
+        if exc.status >= 500:
+            from .integrations.permissions import IntegrationUnavailable
+            raise IntegrationUnavailable('Workflow verification unavailable') from exc
+        raise WorkflowDenied('The request or your assignment changed. Open Pending approvals.') from exc
+    return task
+
+
+def task_label(task):
+    prefix = 'REQ' if task['request_type'] == 'requisition_approval' else 'PA'
+    reference = task['source_reference_id']
+    return reference if reference.upper().startswith(prefix) else f'{prefix} {reference}'
+
+
+def task_summary(task):
+    from .inbox import clean
+    payload = json.loads(task['payload_json'])
+    snapshot = payload.get('record_snapshot') or {}
+    purpose = payload.get('details') or snapshot.get('remarks') or 'See request PDF'
+    amount = payload.get('total_display') or snapshot.get('total_display') or payload.get('amount')
+    if not amount and snapshot.get('items'):
+        try:
+            from .integrations.peta import _detailed_message_fields
+            amount = _detailed_message_fields(snapshot)['total_display']
+        except (ValueError, KeyError, TypeError, IntegrationUnavailable):
+            pass
+    mode = {'correction': 'Return for correction', 'final': 'Reject completely'}.get(task['rejection_mode'], 'Not chosen yet')
+    return f"*{task_label(task)}*\n{clean(purpose, 120)}\nAmount: {clean(amount, 100) or 'See request PDF'}\nRejection type: {mode}"
 
 def prepare(settings, job, command):
     name, phone = command['ui'], job['phone']
@@ -139,19 +172,41 @@ def prepare(settings, job, command):
     if name == 'denied':
         return page('Admin access is not enabled for this number.', back, ('User guide', ui('guide')))
     if name == 'main':
+        pause(settings, phone)
         set_session(settings, phone, None)
         _, values = controls.read(settings)
-        return page('*PETA APPROVAL ASSISTANT*\n' + values['welcome'],
+        options = [('Pending approvals', {'kind': None, 'reference': None, 'company': None, 'cursor': 0}),
+                   ('Find a request', ui('find')), ('User guide', ui('guide')), ('Contact support', ui('support'))]
+        active = rejection(settings, phone)
+        if active:
+            options.insert(0, ('Resume rejection', ui('rejections')))
+        if controls.is_admin(settings, phone):
+            options.append(('Admin controls', ui('admin')))
+        body = '*PETA APPROVAL ASSISTANT*\n' + values['welcome']
+        if active:
+            body += '\nYour unfinished rejection is saved. Choose Resume rejection to continue.'
+        return page(body, *options)
+    if name == 'recovery':
+        return page('That action is expired or unavailable. Open your current requests or resume an unfinished rejection.',
                     ('Pending approvals', {'kind': None, 'reference': None, 'company': None, 'cursor': 0}),
-                    ('Find a request', ui('find')), ('Help & more', ui('more')))
+                    ('Resume rejection', ui('rejections')), back)
     if name == 'more':
         options = [('User guide', ui('guide')), ('Contact support', ui('support')), back]
         if controls.is_admin(settings, phone):
             options.insert(0, ('Admin controls', ui('admin')))
         return page('*HELP & MORE*\nChoose an option.', *options)
     if name == 'guide':
-        return page('*USER GUIDE*\nChoose a topic. HELP is available at any time.',
-                    *((title, ui(key)) for key, (title, _) in GUIDE.items()), back)
+        options = [(title, ui(key)) for key, (title, _) in GUIDE.items()]
+        options.append(('Resume & drafts', ui('resume_help')))
+        if controls.is_admin(settings, phone):
+            options.append(('Admin controls', ui('admin_help')))
+        return page('*USER GUIDE*\nChoose a topic. HELP is available at any time.', *options, back)
+    if name == 'resume_help':
+        return page('Main menu pauses without deleting your rejection draft. Choose Resume rejection to continue here. Sending a reason saves a draft; only Submit rejection sends it. Cancel rejection keeps the request pending. Drafts expire with the rejection session or task.',
+                    ('Resume rejection', ui('rejections')), ('User guide', ui('guide')), back)
+    if name == 'admin_help':
+        return page('Admin controls are available from Main menu or the ADMIN shortcut. Change reminders, welcome/support text, view queues and recent changes. Settings apply across gateway companies and require confirmation. Admin access does not grant approval permissions.',
+                    ('Admin controls', ui('admin')), ('User guide', ui('guide')), back)
     if name in GUIDE:
         title, body = GUIDE[name]
         return page('*' + title.upper() + '*\n' + body, ('User guide', ui('guide')), back)
@@ -163,24 +218,60 @@ def prepare(settings, job, command):
         body = 'Enter a request reference, for example REQ 312 or PA 108.\nUse the actual request ID.'
         if command.get('invalid'): body = 'That reference was not recognized.\n\n' + body
         return page('*FIND A REQUEST*\n' + body, ('User guide', ui('find_help')), back)
-    if name in ('exit', 'context_help', 'resume'):
+    if name in ('exit', 'context_help', 'resume', 'leave', 'rejections', 'rejection_view'):
         active = rejection(settings, phone)
-        if len(active) != 1:
-            return page('More than one rejection may be open. Reply to the specific rejection prompt to continue.', ('User guide', ui('guide')))
-        task = active[0]
-        command['_rejection_reference'] = task['gateway_reference_id']
+        reference = command.get('task')
+        if not reference:
+            if len(active) == 1:
+                reference = active[0]['gateway_reference_id']
+            elif active:
+                offset = max(0, int(command.get('offset', 0)))
+                options = [(task_label(t), ui('exit', task=t['gateway_reference_id'])) for t in active[offset:offset+7]]
+                if offset + 7 < len(active):
+                    options.append(('Next page', ui('rejections', offset=offset+7)))
+                if offset:
+                    options.append(('Back', ui('rejections', offset=max(0, offset-7))))
+                return page('*UNFINISHED REJECTIONS*\nChoose the request to continue.', *options, back)
+            else:
+                return page('No active rejection draft. Open Pending approvals to review a current request.',
+                            ('Pending approvals', {'kind': None, 'reference': None, 'company': None, 'cursor': 0}), back)
+        try:
+            task = verified_task(settings, phone, reference)
+        except WorkflowDenied as exc:
+            return page(str(exc), ('Pending approvals', {'kind': None, 'reference': None, 'company': None, 'cursor': 0}), back)
+        command['_rejection_reference'] = reference
         with connection(settings) as conn:
-            conn.execute('UPDATE inbox_replies SET command_json=? WHERE id=?',
-                         (json.dumps(command), job['id']))
-        label = ('REQ ' if task['request_type'] == 'requisition_approval' else 'PA ') + task['source_reference_id']
-        if name == 'exit':
-            return page(f'*{label}*\nA rejection is in progress. Continue it or cancel the rejection?',
-                        ('Continue rejection', ui('resume')), ('Cancel rejection', ui('leave', task=task['gateway_reference_id'])), ('Help', ui('guide')))
-        if task['rejection_phase'] == 'reason':
-            body = f'*{label} — REASON REQUIRED*\nWrite a reason of 3–2000 characters. Sending the reason submits your rejection.\nHELP shows guidance. CANCEL keeps the request pending.'
-            return page(body, ('Cancel rejection', ui('leave', task=task['gateway_reference_id'])))
-        return page(f'*{label} — REJECTION OPTIONS*\nReturn to the original rejection prompt and select Return to edit, Reject completely or Cancel. You can also reply 1, 2 or 3 to that prompt.',
-                    ('Continue rejection', ui('resume')), ('Cancel rejection', ui('leave', task=task['gateway_reference_id'])))
+            conn.execute('UPDATE inbox_replies SET command_json=? WHERE id=?', (json.dumps(command), job['id']))
+        if name == 'rejection_view':
+            from .inbox import prepare as prepare_inbox
+            source_id = re.sub(r'^(REQ|PA)[ -]*', '', task['source_reference_id'], flags=re.I)
+            search = {'kind': 'requisitions' if task['request_type'] == 'requisition_approval' else 'payment-advices',
+                      'reference': source_id, 'company': task['company'], 'cursor': 0, 'read_only': True}
+            return prepare_inbox(settings, dict(job, command_json=json.dumps(search)))
+        if name in ('resume', 'leave'):
+            from .service import decide, ServiceError
+            with connection(settings) as conn:
+                conn.execute("UPDATE approval_requests SET rejection_paused=1 WHERE actor_phone=? AND status='pending'", (phone,))
+                conn.execute('UPDATE approval_requests SET rejection_paused=0 WHERE id=?', (task['id'],))
+            set_session(settings, phone, None)
+            try:
+                decide(settings, {'action': 'rejected' if name == 'resume' else 'conversation',
+                    'text': 'Resume rejection' if name == 'resume' else 'CANCEL', 'phone': phone,
+                    'reference': reference, 'context_id': None, 'message_id': job['inbound_id']})
+            except ServiceError as exc:
+                if exc.status >= 500:
+                    from .integrations.permissions import IntegrationUnavailable
+                    raise IntegrationUnavailable('Workflow unavailable') from exc
+                return page('Request changed. Refresh your pending approvals.', back)
+            # The rejection queue sends the actual current step, without a second acknowledgement.
+            return '', {'delegated': True}, None
+        body = task_summary(task) + '\nAn unfinished rejection is saved. No decision has been submitted.'
+        if name == 'context_help':
+            body += '\nContinue to choose a rejection type, enter a reason or review your saved draft. Submit rejection is the final confirmation.'
+        return page(body, ('Continue rejection', ui('resume', task=reference)),
+                    ('View request', ui('rejection_view', task=reference)),
+                    ('Cancel rejection', ui('leave', task=reference)), back,
+                    ('User guide', ui('guide')))
     revision, values = controls.read(settings)
     admin_back = ('Admin menu', ui('admin'))
     if name == 'admin':
