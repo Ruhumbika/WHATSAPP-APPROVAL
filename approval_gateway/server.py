@@ -214,7 +214,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 from .progress import handle_progress
 
                 from .inbox import handle_inbox
-                result = handle_inbox(settings, response)
+                from .chat_menu import handle as handle_menu
+                result = handle_menu(settings, response)
+                if result is None:
+                    result = handle_inbox(settings, response)
                 if result is None:
                     result = handle_progress(settings, response)
                 if result is None and response.get("action") == "workflow_view":

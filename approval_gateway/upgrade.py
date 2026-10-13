@@ -199,4 +199,6 @@ def migrate(settings: Settings) -> None:
         init_schema(conn)
         from .inbox import init_schema as init_inbox_schema
         init_inbox_schema(conn)
+        from .chat_menu import init_schema as init_chat_schema
+        init_chat_schema(conn)
         _backfill_delivery_state(conn)

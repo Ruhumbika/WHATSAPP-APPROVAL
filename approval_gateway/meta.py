@@ -52,11 +52,11 @@ def _message_content(
 
         if (
             not isinstance(interactive, dict)
-            or interactive.get("type") != "button_reply"
+            or interactive.get("type") not in ("button_reply", "list_reply")
         ):
             return None
 
-        reply = interactive.get("button_reply")
+        reply = interactive.get(interactive["type"])
 
         if not isinstance(reply, dict):
             return None
@@ -151,6 +151,13 @@ def extract_responses(
                     continue
 
                 original_text, is_button = content
+
+                menu = re.fullmatch(r"menu_([0-9])_(IBX-[A-F0-9]{32})", original_text) if is_button else None
+                if menu:
+                    yield {"action": "menu", "menu_index": int(menu[1]), "reference": menu[2],
+                           "context_id": context_id, "phone": phone, "message_id": message_id,
+                           "text": "Menu selection", "timestamp": message.get("timestamp")}
+                    continue
 
                 inbox = re.fullmatch(r"inbox_(approve|reject)_(IBX-[A-F0-9]{32})", original_text) if is_button else None
                 if inbox:

@@ -299,6 +299,23 @@ class WhatsAppClient:
             return "dry-run-document"
         return self._message_id(self._post_graph(payload))
 
+    def send_menu(self, phone, body, options, token):
+        if not re.fullmatch(r"IBX-[A-F0-9]{32}", token) or not 1 <= len(options) <= 10:
+            raise ValueError("Invalid menu")
+        interactive = {"body": {"text": _text(body, "body", 1024)}}
+        if len(options) <= 3:
+            interactive.update(type="button", action={"buttons": [
+                {"type": "reply", "reply": {"id": f"menu_{i}_{token}", "title": _text(option["title"], "title", 20)}}
+                for i, option in enumerate(options)]})
+        else:
+            interactive.update(type="list", action={"button": "Choose an option", "sections": [{"title": "Options", "rows": [
+                {"id": f"menu_{i}_{token}", "title": _text(option["title"], "title", 24)}
+                for i, option in enumerate(options)]}]})
+        payload = {"messaging_product": "whatsapp", "to": normalize_phone(phone), "type": "interactive", "interactive": interactive}
+        if self.settings.dry_run_whatsapp:
+            return "dry-run-menu-" + token
+        return self._message_id(self._post_graph(payload))
+
     def send_inbox_document(self, phone, body, document, token):
         # Free-form interactive response to a verified inbound message only.
         if not re.fullmatch(r"IBX-[A-F0-9]{32}", token):

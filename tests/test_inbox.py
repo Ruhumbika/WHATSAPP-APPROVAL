@@ -43,6 +43,7 @@ class InboxTests(unittest.TestCase):
         p.start(); self.addCleanup(p.stop)
         self.client = Mock()
         self.client.send_text.return_value = 'wamid.inbox'
+        self.client.send_menu.return_value = 'wamid.menu'
         self.client.send_inbox_document.return_value = 'wamid.document'
         self.reply = {'action': 'conversation', 'text': 'PENDING', 'phone': self.phone, 'message_id': 'inbox-1', 'timestamp': str(int(time.time()))}
 
@@ -73,11 +74,11 @@ class InboxTests(unittest.TestCase):
         self.run_command()
         self.assertEqual(len(self.jobs()), 1)
         self.assertEqual(self.jobs()[0]['status'], 'simulated')
-        body = self.client.send_text.call_args.args[1]
+        body = self.client.send_menu.call_args.args[1]
         self.assertIn('REQ 9 C77', body)
         self.assertIn('PENDING C77 NEXT 5', body)
         process_inbox(self.settings, self.client, 5)
-        self.client.send_text.assert_called_once()
+        self.client.send_menu.assert_called_once()
 
     def test_expired_inbound_is_not_queued(self):
         self.reply['timestamp'] = str(int(time.time()) - 86400)
@@ -92,7 +93,7 @@ class InboxTests(unittest.TestCase):
         self.directory_phone = '255700000099'
         self.reply['phone'] = self.directory_phone
         self.run_command()
-        self.assertIn('REQ 9', self.client.send_text.call_args.args[1])
+        self.assertIn('REQ 9', self.client.send_menu.call_args.args[1])
 
     def test_old_phone_cannot_read_after_directory_change(self):
         self.directory_phone = '255700000099'
@@ -158,15 +159,15 @@ class InboxTests(unittest.TestCase):
         self.assertIn('No action is currently assigned', self.client.send_text.call_args.args[1])
 
     def test_ambiguous_acceptance_is_not_retried(self):
-        self.client.send_text.side_effect = WhatsAppError('Timeout', delivery_unknown=True)
+        self.client.send_menu.side_effect = WhatsAppError('Timeout', delivery_unknown=True)
         self.assertEqual(self.run_command()['status'], 'unknown')
         process_inbox(self.settings, self.client, 5)
-        self.client.send_text.assert_called_once()
+        self.client.send_menu.assert_called_once()
 
     def test_empty_page_is_clear(self):
         self.page.update(items=[], next_cursor=None)
         self.run_command()
-        self.assertIn('No pending approvals found', self.client.send_text.call_args.args[1])
+        self.assertIn('No pending approvals found', self.client.send_menu.call_args.args[1])
 
     def test_provider_button_payload_roundtrip(self):
         from dataclasses import replace
@@ -192,7 +193,7 @@ class InboxTests(unittest.TestCase):
         self.assertIn('Select a company', self.client.send_text.call_args.args[1])
         self.reply['message_id'] = 'inbox-2'
         self.run_command('PENDING C77')
-        self.assertIn('REQ 9', self.client.send_text.call_args.args[1])
+        self.assertIn('REQ 9', self.client.send_menu.call_args.args[1])
 
     def test_phone_change_during_document_preparation_prevents_send(self):
         def download(*args):

@@ -108,6 +108,8 @@ def enqueue(conn, watch, kind, state, recipient, key, expires=None):
 
 
 def sync_watch(settings, watch):
+    from .admin_controls import effective
+    settings = effective(settings)
     _, _, data = context(settings, watch)
     stage = stage_key(data)
     now = utc_now()
@@ -131,6 +133,11 @@ def sync_watch(settings, watch):
                     key = digest([watch['id'], 'reminder', stage, slot, recipient['id']])
                     expires = (datetime.fromisoformat(since) + timedelta(hours=(slot + 1) * settings.workflow_reminder_hours)).isoformat()
                     enqueue(conn, watch, 'reminder', stage, recipient, key, expires)
+                    # Resume can revive an unsent current slot cancelled by settings.
+                    conn.execute("""UPDATE workflow_notifications SET status='pending',last_error=NULL,
+                        next_attempt_at=?,expires_at=?,updated_at=? WHERE dedup_key=?
+                        AND status='cancelled' AND last_error='Reminder settings changed'""",
+                        (now, expires, now, key))
         conn.execute('''UPDATE workflow_watches SET company=?,stage_key=?,stage_since=?,
             next_check_at=?,last_error=NULL WHERE id=?''',
             (data['company'], stage, since, later(60) if stage else '9999-12-31T00:00:00+00:00', watch['id']))
@@ -198,6 +205,9 @@ def prepare_send(settings, job, watch):
         if kind == 'completed' and not data['completed']:
             raise WorkflowDenied('Workflow is not fully completed')
     elif kind == 'reminder':
+        from .admin_controls import effective
+        if not effective(settings).workflow_reminder_limit:
+            raise WorkflowDenied('Reminders are paused or disabled')
         if not current or job['state_key'] != stage_key(data):
             raise WorkflowDenied('Reminder step is no longer pending')
         user = next((u for u in current['approvers'] if u['id'] == stored['id']), None)
@@ -265,7 +275,9 @@ def send_job(settings, client, job):
         if job['expires_at'] and job['expires_at'] <= utc_now():
             conn.execute("UPDATE workflow_notifications SET status='cancelled',last_error='Notification window expired' WHERE id=?", (job['id'],))
             return
-        conn.execute("UPDATE workflow_notifications SET status='sending',attempts=attempts+1,updated_at=? WHERE id=?", (utc_now(), job['id']))
+        claimed = conn.execute("UPDATE workflow_notifications SET status='sending',attempts=attempts+1,updated_at=? WHERE id=? AND status='pending'", (utc_now(), job['id']))
+        if not claimed.rowcount:
+            return
     attempts = job['attempts'] + 1
     status, message_id, error, phone = 'sent', None, None, None
     dispatching = False

@@ -237,3 +237,21 @@ class AutomaticNotificationTests(unittest.TestCase):
                 self.assertEqual(len(body['parameters']), count)
                 self.assertEqual(template['components'][-1]['parameters'][0]['payload'],
                                  ('workflow_request_' if name == 'workflow_action_reminder' else 'workflow_progress_') + token)
+
+
+    def test_admin_pause_cancels_pending_and_resume_sends_current_slot(self):
+        from approval_gateway import admin_controls as controls
+        from approval_gateway.workflow_notifications import sync_watch
+        self.settings = replace(self.settings, whatsapp_admin_phones=(self.phone,))
+        self.tick()
+        self.age(25)
+        with connection(self.settings) as conn:
+            watch = dict(conn.execute('SELECT * FROM workflow_watches').fetchone())
+        sync_watch(self.settings, watch)
+        self.assertTrue(any(j['kind'] == 'reminder' and j['status'] == 'pending' for j in self.jobs()))
+        controls.apply(self.settings, self.phone, 'pause-1', 'reminders_paused', True, 0)
+        self.tick()
+        self.assertFalse(any(j['kind'] == 'reminder' and j['status'] in ('pending', 'simulated') for j in self.jobs()))
+        controls.apply(self.settings, self.phone, 'resume-1', 'reminders_paused', False, 1)
+        self.tick()
+        self.assertEqual(sum(j['kind'] == 'reminder' and j['status'] == 'simulated' for j in self.jobs()), 1)

@@ -162,7 +162,7 @@ def render_page(data, company):
     items = data['items']
     body = '*YOUR PENDING APPROVALS*\nOldest requests first\n'
     for item in items:
-        body += f"\n*{label(item)}* · {amount(item)}\n{clean(item.get('purpose'), 90) or 'Purpose not recorded'}\n"
+        body += f"\n*{label(item)}* · {clean(amount(item), 60)}\n{clean(item.get('purpose'), 60) or 'Purpose not recorded'}\n"
     if not items:
         body += '\nNo approvals in this batch.' if data.get('next_cursor') is not None else '\nNo pending approvals found.'
     if items:
@@ -197,6 +197,11 @@ def handle_inbox(settings, response):
     command = parse(response.get('text', ''))
     if command is None:
         return None
+    return enqueue_reply(settings, response, command)
+
+
+def enqueue_reply(settings, response, command):
+    from .service import ServiceError
     try:
         received = datetime.fromtimestamp(int(response['timestamp']), timezone.utc)
         expires = received + timedelta(hours=23, minutes=55)
@@ -226,6 +231,9 @@ def handle_inbox(settings, response):
 
 def prepare(settings, job):
     command = json.loads(job['command_json'])
+    if command.get('ui'):
+        from .chat_menu import prepare as prepare_menu
+        return prepare_menu(settings, job, command)
     binding, guard = identity(settings, job['phone'], command, job.get('binding_id'))
     # Pin the verified identity for retries, including phone reassignments.
     with connection(settings) as conn:
@@ -233,8 +241,15 @@ def prepare(settings, job):
     data = read_api(guard, binding, command)
     identity(settings, job['phone'], command, binding['id'])
     if not command['kind']:
-        return render_page(data, binding['company']), None, None
-    body = summary(data)
+        from .chat_menu import page, ui
+        options = [(label(item), {'kind': item['kind'], 'reference': item['reference_id'], 'company': binding['company'], 'cursor': 0}) for item in data['items']]
+        if data.get('next_cursor') is not None:
+            options.append(('Next page', dict(command, company=binding['company'], cursor=data['next_cursor'])))
+        options.append(('Main menu', ui('main')))
+        return page(render_page(data, binding['company']), *options)
+    from .chat_menu import set_session
+    set_session(settings, job['phone'], None)
+    body = summary(data) + '\nNeed help? Type HELP.'
     if not data['can_act']:
         return body + '\n\nNo action is currently assigned to you.', None, None
     actor = guard.authorize({'request_type': TYPES[command['kind']], 'reference_id': command['reference'],
@@ -275,6 +290,10 @@ def process_inbox(settings, client, limit):
         conn.execute("UPDATE inbox_replies SET status='expired' WHERE status='pending' AND expires_at<=?", (utc_now(),))
         jobs = [dict(r) for r in conn.execute("SELECT * FROM inbox_replies WHERE status='pending' AND next_attempt_at<=? ORDER BY id LIMIT ?", (utc_now(), limit))]
     for job in jobs:
+        if job['expires_at'] <= utc_now():
+            with connection(settings) as conn:
+                conn.execute("UPDATE inbox_replies SET status='expired' WHERE id=? AND status='pending'", (job['id'],))
+            continue
         attempts = job['attempts'] + 1
         with connection(settings) as conn:
             conn.execute("UPDATE inbox_replies SET status='sending',attempts=? WHERE id=? AND status='pending'", (attempts, job['id']))
@@ -289,9 +308,15 @@ def process_inbox(settings, client, limit):
                 status = 'expired'
             else:
                 dispatching = True
-                message_id = (client.send_inbox_document(job['phone'], body, document, job['token'])
-                              if document else client.send_text(job['phone'], body))
+                if document and 'menu_options' in document:
+                    with connection(settings) as conn:
+                        conn.execute('UPDATE inbox_replies SET actions_json=? WHERE id=?', (json.dumps(document['menu_options']), job['id']))
+                    message_id = client.send_menu(job['phone'], body, document['menu_options'], job['token'])
+                else:
+                    message_id = (client.send_inbox_document(job['phone'], body, document, job['token'])
+                                  if document else client.send_text(job['phone'], body))
                 if not isinstance(message_id, str) or not message_id:
+                    message_id = None
                     raise WhatsAppError('Missing acknowledgement', delivery_unknown=True)
                 status = 'simulated' if settings.dry_run_whatsapp else 'sent'
         except IntegrationUnavailable:

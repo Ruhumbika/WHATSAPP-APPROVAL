@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -69,6 +70,15 @@ def _get_bool(
     raise ConfigurationError(f"{name} must be true or false.")
 
 
+def _admin_phones(value: str) -> tuple[str, ...]:
+    if not value.strip():
+        return ()
+    phones = tuple(dict.fromkeys(part.strip() for part in value.split(',')))
+    if len(phones) > 20 or any(not re.fullmatch(r'[1-9][0-9]{7,14}', phone) for phone in phones):
+        raise ConfigurationError('WHATSAPP_ADMIN_PHONES requires up to 20 international numbers, digits only, separated by commas.')
+    return phones
+
+
 def _get_int(
     values: dict[str, str],
     name: str,
@@ -124,6 +134,7 @@ class Settings:
     workflow_notifications_enabled: bool = False
     workflow_reminder_hours: int = 6
     workflow_reminder_limit: int = 3
+    whatsapp_admin_phones: tuple[str, ...] = ()
 
 
 def _validate_settings(settings: Settings) -> None:
@@ -252,6 +263,7 @@ def load_settings() -> Settings:
             "DRY_RUN_WHATSAPP",
             True,
         ),
+        whatsapp_admin_phones=_admin_phones(values.get("WHATSAPP_ADMIN_PHONES", "")),
         workflow_notifications_enabled=_get_bool(values, "WORKFLOW_NOTIFICATIONS_ENABLED", False),
         workflow_reminder_hours=_get_int(values, "WORKFLOW_REMINDER_HOURS", 6, minimum=1, maximum=168),
         workflow_reminder_limit=_get_int(values, "WORKFLOW_REMINDER_LIMIT", 3, minimum=0, maximum=10),
