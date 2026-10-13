@@ -153,7 +153,7 @@ class UserDirectoryClient:
                 granted_permissions=frozenset(),
                 source_user_ids=tuple(sorted(source_ids)),
             )
-            return user, profile
+            return user, dict(profile, _verified_service={'id': self.service_id, 'name': service.get('name', '')})
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             raise IntegrationUnavailable(
                 "Invalid Directory identity/service response"

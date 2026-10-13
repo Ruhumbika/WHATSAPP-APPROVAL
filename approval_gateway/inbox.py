@@ -234,6 +234,14 @@ def prepare(settings, job):
     if command.get('ui'):
         from .chat_menu import prepare as prepare_menu
         return prepare_menu(settings, job, command)
+    from .service_context import discover, selected
+    with connection(settings) as conn:
+        selection = conn.execute('SELECT system_name FROM chat_service_selection WHERE phone=?', (job['phone'],)).fetchone()
+    services, _ = discover(settings, job['phone'])
+    if len(services) > 1 and selected(settings, job['phone'], services) is None:
+        raise WorkflowDenied('Choose your ERP service from Main menu before opening requests.')
+    if selection and selection['system_name'] != 'peta':
+        raise WorkflowDenied('Switch to the appropriate ERP service before opening its requests.')
     binding, guard = identity(settings, job['phone'], command, job.get('binding_id'))
     # Pin the verified identity for retries, including phone reassignments.
     with connection(settings) as conn:
@@ -242,14 +250,21 @@ def prepare(settings, job):
     identity(settings, job['phone'], command, binding['id'])
     if not command['kind']:
         from .chat_menu import page, ui
-        options = [(label(item), {'kind': item['kind'], 'reference': item['reference_id'], 'company': binding['company'], 'cursor': 0}) for item in data['items']]
+        options = [(label(item), {'kind': item['kind'], 'reference': item['reference_id'], 'company': binding['company'], 'cursor': 0, 'preview': True}) for item in data['items']]
         if data.get('next_cursor') is not None:
             options.append(('Next page', dict(command, company=binding['company'], cursor=data['next_cursor'])))
         options.append(('Main menu', ui('main')))
         return page(render_page(data, binding['company']), *options)
     from .chat_menu import set_session
     set_session(settings, job['phone'], None)
-    body = summary(data) + '\nNeed help? Type HELP.'
+    service = selected(settings, job['phone'], services)
+    body = 'Service: ' + (clean(service['name'], 80) if service else 'PETA') + '\n' + summary(data) + '\nNeed help? Type HELP.'
+    if command.get('preview'):
+        from .chat_menu import page, ui
+        return page(body, ('View document', dict(command, preview=False)),
+                    ('Next pending request', {'kind': None, 'reference': None, 'company': binding['company'], 'cursor': 0}),
+                    ('Main menu', ui('main')))
+
     if not data['can_act']:
         return body + '\n\nNo action is currently assigned to you.', None, None
     actor = guard.authorize({'request_type': TYPES[command['kind']], 'reference_id': command['reference'],
@@ -302,6 +317,12 @@ def process_inbox(settings, client, limit):
             conn.execute("UPDATE inbox_replies SET status='sending',attempts=? WHERE id=? AND status='pending'", (attempts, job['id']))
         status, message_id, error, task_id = 'sent', None, None, None
         dispatching = False
+        if attempts == 1:
+            try:
+                client.send_typing(job['inbound_id'])
+            except Exception:
+                # A read receipt/typing failure must never block a business response.
+                logger.debug('Typing indicator unavailable for inbox job %s', job['id'])
         try:
             try:
                 body, document, task_id = prepare(settings, job)

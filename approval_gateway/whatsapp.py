@@ -299,6 +299,14 @@ class WhatsAppClient:
             return "dry-run-document"
         return self._message_id(self._post_graph(payload))
 
+    def send_typing(self, message_id):
+        if self.settings.dry_run_whatsapp:
+            return
+        if not isinstance(message_id, str) or not 1 <= len(message_id) <= 512:
+            return
+        self._post_graph({"messaging_product": "whatsapp", "status": "read",
+                          "message_id": message_id, "typing_indicator": {"type": "text"}}, timeout=2)
+
     def send_menu(self, phone, body, options, token):
         if not re.fullmatch(r"IBX-[A-F0-9]{32}", token) or not 1 <= len(options) <= 10:
             raise ValueError("Invalid menu")
@@ -433,6 +441,7 @@ class WhatsAppClient:
     def _post_graph(
         self,
         payload: dict[str, Any],
+        *, timeout: float = HTTP_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         token = self.settings.whatsapp_access_token
         phone_id = self.settings.whatsapp_phone_number_id
@@ -467,7 +476,7 @@ class WhatsAppClient:
         try:
             with self._opener.open(
                 request,
-                timeout=HTTP_TIMEOUT_SECONDS,
+                timeout=timeout,
             ) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
 

@@ -118,7 +118,7 @@ class AutomaticNotificationTests(unittest.TestCase):
     def test_completion_sends_pdf_once_and_stops_reminders(self):
         self.tick(); self.complete(); self.event(2); self.tick(); self.event(3); self.tick()
         self.assertEqual(self.pdf.call_count, 1)
-        self.assertEqual([job['kind'] for job in self.jobs()], ['progress', 'completed'])
+        self.assertEqual([job['kind'] for job in self.jobs()], ['progress', 'retired', 'completed'])
         args = self.client.send_workflow_template.call_args[0]
         self.assertEqual(args[1], 'workflow_completed_document')
         self.assertEqual(len(args[2]), 4)
@@ -172,7 +172,7 @@ class AutomaticNotificationTests(unittest.TestCase):
         self.refresh(); self.event(2); self.tick()
         self.data['progress'].update(status='In progress', record_status='SUBMITTED', current_step=self.level)
         self.refresh(); self.event(3); self.tick()
-        self.assertEqual(len(self.jobs()), 3)
+        self.assertEqual(len([j for j in self.jobs() if j['kind'] != 'retired']), 3)
         self.pdf.assert_not_called()
         with connection(self.settings) as conn:
             self.assertIsNotNone(conn.execute('SELECT stage_since FROM workflow_watches').fetchone()[0])
@@ -255,3 +255,50 @@ class AutomaticNotificationTests(unittest.TestCase):
         controls.apply(self.settings, self.phone, 'resume-1', 'reminders_paused', False, 1)
         self.tick()
         self.assertEqual(sum(j['kind'] == 'reminder' and j['status'] == 'simulated' for j in self.jobs()), 1)
+
+    def test_other_reviewer_completion_closes_draft_and_notifies_once(self):
+        self.tick()
+        with connection(self.settings) as conn:
+            conn.execute("UPDATE approval_requests SET rejection_phase='reason',rejection_draft='Fix price',rejection_review_token='old',rejection_expires_at='2099-01-01T00:00:00+00:00'")
+        self.complete()
+        self.event(2); self.tick()
+        with connection(self.settings) as conn:
+            row = conn.execute('SELECT * FROM approval_requests').fetchone()
+            self.assertEqual((row['status'], row['rejection_phase'], row['rejection_draft']), ('cancelled', 'closed', None))
+        notices = [j for j in self.jobs() if j['kind'] == 'retired']
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]['phone'], self.numbers[43])
+        args = [c.args for c in self.client.send_workflow_template.call_args_list if 'unfinished rejection' in str(c)]
+        self.assertEqual(len(args), 1)
+        self.data['progress']['updated_at'] = '2090-01-01T00:00:00+00:00'
+        self.refresh(); self.event(3); self.tick()
+        self.assertEqual(len([j for j in self.jobs() if j['kind'] == 'retired']), 1)
+
+    def test_required_co_reviewer_is_not_cancelled(self):
+        self.tick()
+        # Another reviewer action exists, but ERP still requires the same user at this step.
+        self.data['progress']['latest_action'] = {'action':'APPROVED','actor':{'id':44,'username':'Other'},'position':'Director'}
+        self.refresh(); self.event(2); self.tick()
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute('SELECT status FROM approval_requests').fetchone()[0], 'pending')
+        self.assertFalse(any(j['kind'] == 'retired' for j in self.jobs()))
+
+    def test_poll_reconciles_without_new_event_and_notifications_disabled(self):
+        self.tick()
+        self.complete()
+        self.settings = replace(self.settings, workflow_notifications_enabled=False)
+        self.age(1)
+        self.tick()
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute('SELECT status FROM approval_requests').fetchone()[0], 'cancelled')
+        self.assertFalse(any(j['kind'] == 'retired' for j in self.jobs()))
+
+    def test_retired_notice_verifies_directory_identity(self):
+        self.tick()
+        self.complete()
+        self.guard.directory.resolve_recipient = lambda user: SimpleNamespace(
+            peta_user_id=user['id'], phone_number=self.numbers[user['id']],
+            directory_user=SimpleNamespace(directory_uuid='different-identity'))
+        self.event(2); self.tick()
+        notice = next(j for j in self.jobs() if j['kind'] == 'retired')
+        self.assertEqual(notice['status'], 'cancelled')

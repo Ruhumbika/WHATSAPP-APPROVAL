@@ -751,14 +751,8 @@ def process_workflow_event(
             if scope in current_scopes:
                 continue
 
-            conn.execute(
-                """
-                UPDATE approval_requests
-                SET status = 'cancelled', updated_at = ?
-                WHERE id = ? AND status = 'pending'
-                """,
-                (now, task["id"]),
-            )
+            from .reviewer_sync import retire
+            retire(conn, task["id"], "ERP workflow assignment is no longer current.")
             audit(
                 conn,
                 task["id"],
@@ -768,7 +762,7 @@ def process_workflow_event(
                     "workflow_event_id": event["event_id"],
                 },
             )
-        if settings.workflow_notifications_enabled and system == "peta":
+        if system == "peta":
             from .workflow_notifications import watch_event
             watch_event(conn, event)
         conn.execute(

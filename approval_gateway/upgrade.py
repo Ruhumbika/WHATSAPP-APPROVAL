@@ -7,6 +7,9 @@ from .db import connection, utc_now
 
 # Fixed migration definitions; identifiers never come from request input.
 _REQUEST_COLUMNS = {
+    "retirement_reason": "TEXT",
+    "retirement_notice_queued": "INTEGER NOT NULL DEFAULT 0",
+    "retirement_had_draft": "INTEGER NOT NULL DEFAULT 0",
     "rejection_draft": "TEXT",
     "rejection_review_token": "TEXT",
     "rejection_paused": "INTEGER NOT NULL DEFAULT 0",
@@ -200,6 +203,14 @@ def migrate(settings: Settings) -> None:
 
         from .workflow_notifications import init_schema
         init_schema(conn)
+        # Enrol existing pending PETA requests so a missed ERP event can be reconciled.
+        conn.execute("""INSERT OR IGNORE INTO workflow_watches
+            (source_system,request_type,reference_id,event_id,next_check_at)
+            SELECT source_system,request_type,source_reference_id,0,? FROM approval_requests
+            WHERE source_system='peta' AND status='pending'
+              AND request_type IN ('requisition_approval','payment_advice_approval')
+              AND source_reference_id!='' AND source_reference_id NOT GLOB '*[^0-9]*'""", (utc_now(),))
+        conn.execute("UPDATE workflow_watches SET next_check_at=? WHERE next_check_at>'9990'", (utc_now(),))
         from .inbox import init_schema as init_inbox_schema
         init_inbox_schema(conn)
         from .chat_menu import init_schema as init_chat_schema

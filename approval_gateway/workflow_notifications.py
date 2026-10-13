@@ -119,11 +119,15 @@ def sync_watch(settings, watch):
         # An event arriving during the read must get its own immediate recheck.
         if current['event_id'] != watch['event_id']:
             return
+        from .reviewer_sync import reconcile
+        reconcile(conn, watch, data, settings.workflow_notifications_enabled)
+        conn.execute("UPDATE workflow_notifications SET status='cancelled',last_error='Stage changed' WHERE watch_id=? AND kind='reminder' AND status='pending' AND state_key!=?", (watch['id'], stage or ''))
         since = current['stage_since'] if current['stage_key'] == stage else now
         kind = 'completed' if data['completed'] else 'progress'
         key = digest([watch['id'], kind, data['cycle'], data['state_key'], data['creator']['id']])
-        enqueue(conn, watch, kind, data['state_key'], data['creator'], key)
-        if stage and settings.workflow_reminder_limit:
+        if settings.workflow_notifications_enabled:
+            enqueue(conn, watch, kind, data['state_key'], data['creator'], key)
+        if settings.workflow_notifications_enabled and stage and settings.workflow_reminder_limit:
             seconds = (datetime.now(timezone.utc) - datetime.fromisoformat(since)).total_seconds()
             slot = int(seconds // (settings.workflow_reminder_hours * 3600))
             # Missed intervals collapse into one current reminder, never a catch-up burst.
@@ -140,7 +144,7 @@ def sync_watch(settings, watch):
                         (now, expires, now, key))
         conn.execute('''UPDATE workflow_watches SET company=?,stage_key=?,stage_since=?,
             next_check_at=?,last_error=NULL WHERE id=?''',
-            (data['company'], stage, since, later(60) if stage else '9999-12-31T00:00:00+00:00', watch['id']))
+            (data['company'], stage, since, later(60) if stage else later(300), watch['id']))
 
 
 def resolve_phone(settings, watch, guard, data, user):
@@ -216,6 +220,19 @@ def prepare_send(settings, job, watch):
     else:
         user = next((u for u in [data['creator'], *((current or {}).get('approvers', []))] if u['id'] == stored['id']), stored)
     phone, recipient = resolve_phone(settings, watch, guard, data, user)
+    if kind == 'retired':
+        with connection(settings) as conn:
+            task = conn.execute("SELECT * FROM approval_requests WHERE id=?", (stored['_retired_task'],)).fetchone()
+        if not task or task['status'] != 'cancelled' or not task['retirement_reason']:
+            raise WorkflowDenied('Task retirement no longer applies')
+        if recipient.directory_user.directory_uuid != task['actor_directory_uuid'] or str(recipient.peta_user_id) != task['actor_user_id']:
+            raise WorkflowDenied('Retired reviewer identity changed')
+        values = template_parameters(p)
+        values[1] = 'Earlier task replaced; open your current inbox' if stored.get('_replaced') else 'Your action at the earlier step is no longer required'
+        if task['retirement_had_draft'] or stored.get('_had_draft'):
+            values[1] += '. Your unfinished rejection was closed without submission'
+        return phone, 'workflow_progress_update', values, None
+
     if kind.startswith('view_'):
         if phone != stored['_reply_phone']:
             raise WorkflowDenied('Reply phone no longer matches Directory')
@@ -322,6 +339,8 @@ def process_automatic_notifications(settings, client, limit):
             logger.warning('Workflow notification context unavailable for watch %s', watch['id'])
             with connection(settings) as conn:
                 conn.execute('UPDATE workflow_watches SET next_check_at=?,last_error=? WHERE id=?', (later(300), 'ERP notification context unavailable', watch['id']))
+    if not settings.workflow_notifications_enabled:
+        return
     with connection(settings) as conn:
         jobs = [dict(r) for r in conn.execute("SELECT * FROM workflow_notifications WHERE status='pending' AND next_attempt_at<=? ORDER BY id LIMIT ?", (utc_now(), limit))]
     for job in jobs:

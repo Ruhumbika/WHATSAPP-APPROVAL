@@ -57,6 +57,11 @@ ACTORS = (
 
 class WorkflowIntegrationTests(unittest.TestCase):
     def setUp(self):
+        # This fixture models approval endpoints only; reconciliation has its own fixture.
+        notification_context = patch("approval_gateway.workflow_notifications.context",
+            side_effect=IntegrationUnavailable("Notification endpoint is not part of this fixture"))
+        notification_context.start()
+        self.addCleanup(notification_context.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.settings = replace(
@@ -208,7 +213,10 @@ class WorkflowIntegrationTests(unittest.TestCase):
         return confirm_review(self.settings, task, task['actor_phone'], str(uuid4()))
 
     def run_worker(self):
-        with patch("approval_gateway.worker.WhatsAppClient") as client:
+        with patch("approval_gateway.worker.WhatsAppClient") as client, patch(
+            "approval_gateway.workflow_notifications.context",
+            side_effect=IntegrationUnavailable("Notification endpoint is not part of this fixture"),
+        ):
             client.return_value.send_text.return_value = "wamid.text"
             client.return_value.send_approval_request.return_value = (
                 "wamid.mock"

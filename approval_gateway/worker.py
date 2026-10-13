@@ -620,6 +620,9 @@ def _send_callback(
                 (callback["approval_request_id"],),
             ).fetchone()
         )
+        if reply["execution_status"] == "applied":
+            conn.execute("""UPDATE workflow_watches SET next_check_at=? WHERE source_system=?
+                AND request_type=? AND reference_id=?""", (now, request['source_system'], request['request_type'], request['source_reference_id']))
         enqueue_notification(conn, request, "result", now)
         audit(
             conn,
@@ -729,9 +732,8 @@ def run_once(settings: Settings, limit: int = 25) -> dict[str, Any]:
         process_notifications(settings, client, limit)
         from .inbox import process_inbox
         process_inbox(settings, client, limit)
-        if settings.workflow_notifications_enabled:
-            from .workflow_notifications import process_automatic_notifications
-            process_automatic_notifications(settings, client, limit)
+        from .workflow_notifications import process_automatic_notifications
+        process_automatic_notifications(settings, client, limit)
         return {
             "workflow_events": events,
             "delivery_attempts": deliveries,

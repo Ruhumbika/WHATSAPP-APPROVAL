@@ -245,3 +245,20 @@ class InboxTests(unittest.TestCase):
             row = conn.execute('SELECT status,rejection_draft FROM approval_requests').fetchone()
             self.assertEqual(tuple(row), ('pending', 'Wrong price'))
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM callback_attempts').fetchone()[0], 0)
+
+    def test_list_selection_shows_summary_before_pdf(self):
+        from approval_gateway.chat_menu import handle
+        self.run_command()
+        parent = self.jobs()[-1]
+        options = json.loads(parent['actions_json'])
+        index = next(i for i,o in enumerate(options) if o['title'] == 'REQ 9')
+        handle(self.settings, dict(self.reply, action='menu', reference=parent['token'],
+              context_id='wamid.menu', message_id='select-summary', menu_index=index))
+        process_inbox(self.settings, self.client, 5)
+        self.client.send_inbox_document.assert_not_called()
+        self.assertIn('View document', self.jobs()[-1]['actions_json'])
+        self.assertIn('Office equipment', self.client.send_menu.call_args.args[1])
+
+    def test_typing_failure_does_not_block_reply(self):
+        self.client.send_typing.side_effect = RuntimeError('Transient typing failure')
+        self.assertEqual(self.run_command()['status'], 'simulated')

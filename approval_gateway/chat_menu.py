@@ -21,6 +21,8 @@ def init_schema(conn):
     conn.execute('''CREATE TABLE IF NOT EXISTS chat_sessions (
         phone TEXT PRIMARY KEY, state_json TEXT NOT NULL, expires_at TEXT NOT NULL)''')
     controls.init_schema(conn)
+    from .service_context import init_schema as init_services
+    init_services(conn)
 
 
 def page(body, *options):
@@ -75,11 +77,11 @@ def handle(settings, response):
             parent = conn.execute("SELECT * FROM inbox_replies WHERE token=? AND phone=? AND message_id=? AND status IN ('sent','simulated') AND expires_at>?",
                 (response.get('reference'), response.get('phone'), response.get('context_id'), utc_now())).fetchone()
         if parent is None:
-            return enqueue_reply(settings, response, ui('recovery'))
+            return enqueue_reply(settings, response, ui('recovery', reference=response.get('reference')))
         options = json.loads(parent['actions_json'] or '[]')
         index = response.get('menu_index')
         if type(index) is not int or not 0 <= index < len(options):
-            return enqueue_reply(settings, response, ui('recovery'))
+            return enqueue_reply(settings, response, ui('recovery', reference=response.get('reference')))
         command = options[index]['command']
         if command.get('ui', '').startswith('admin') and not controls.is_admin(settings, response['phone']):
             command = ui('denied')
@@ -171,6 +173,14 @@ def prepare(settings, job, command):
         controls.require_admin(settings, phone)
     if name == 'denied':
         return page('Admin access is not enabled for this number.', back, ('User guide', ui('guide')))
+    if name in ('services', 'select_service'):
+        from .service_context import discover, select
+        if name == 'select_service':
+            select(settings, phone, command['system'], command['service_id'])
+            return prepare(settings, job, ui('main'))
+        services, unavailable = discover(settings, phone)
+        options = [((str(s['id']) + ' · ' + s['name'])[:20], ui('select_service', system=s['system'], service_id=s['id'])) for s in services[:8]]
+        return page('Choose your ERP service.' if options else 'Service identity could not be verified. Please try again or contact support.', *options, back)
     if name == 'main':
         pause(settings, phone)
         set_session(settings, phone, None)
@@ -182,12 +192,43 @@ def prepare(settings, job, command):
             options.insert(0, ('Resume rejection', ui('rejections')))
         if controls.is_admin(settings, phone):
             options.append(('Admin controls', ui('admin')))
-        body = '*PETA APPROVAL ASSISTANT*\n' + values['welcome']
+        from .service_context import discover, selected, GENERIC
+        services, unavailable = discover(settings, phone)
+        service = selected(settings, phone, services)
+        title = service['name'] + ' ERP ASSISTANT' if service else GENERIC
+        if len(services) > 1:
+            options.insert(0, ('Switch service' if service else 'Choose service', ui('services')))
+            if not service:
+                options = [o for o in options if o[0] not in ('Pending approvals', 'Find a request')]
+        body = '*' + title + '*\n' + values['welcome']
+        if unavailable and not service:
+            body += '\nService verification is temporarily unavailable.'
+        # Only supported inbox adapters are shown, never send another ERP's command to PETA.
+        if service and service['system'] != 'peta':
+            options = [o for o in options if o[0] not in ('Pending approvals', 'Find a request')]
+            body += '\nRequest browsing for this service is not configured yet.'
+
         if active:
             body += '\nYour unfinished rejection is saved. Choose Resume rejection to continue.'
         return page(body, *options)
     if name == 'recovery':
-        return page('That action is expired or unavailable. Open your current requests or resume an unfinished rejection.',
+        with connection(settings) as conn:
+            task = conn.execute('SELECT * FROM approval_requests WHERE gateway_reference_id=? AND actor_phone=?',
+                                (command.get('reference'), phone)).fetchone()
+            if task is None:
+                task = conn.execute('''SELECT r.* FROM inbox_replies i JOIN approval_requests r ON r.id=i.task_id
+                    WHERE i.token=? AND i.phone=? AND r.actor_phone=?''', (command.get('reference'), phone, phone)).fetchone()
+            if task is None and command.get('context_id'):
+                task = conn.execute("""SELECT r.* FROM decision_repeat_notifications n
+                    JOIN approval_requests r ON r.id=n.approval_request_id
+                    WHERE n.message_id=? AND n.phone=? AND r.actor_phone=? LIMIT 1""",
+                    (command['context_id'], phone, phone)).fetchone()
+        body = 'That action is expired or unavailable. Open your current requests or resume an unfinished rejection.'
+        if task and task['retirement_reason']:
+            body = task_label(dict(task)) + ': your earlier task is no longer current.'
+            if task['retirement_had_draft']:
+                body += ' Your unfinished rejection was closed without submission.'
+        return page(body,
                     ('Pending approvals', {'kind': None, 'reference': None, 'company': None, 'cursor': 0}),
                     ('Resume rejection', ui('rejections')), back)
     if name == 'more':
