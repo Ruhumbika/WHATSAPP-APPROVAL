@@ -1,6 +1,7 @@
 """Gateway-wide operator controls. Admin authority comes only from configuration."""
 from dataclasses import replace
 import json
+import re
 from .db import connection, utc_now
 from .integrations.permissions import WorkflowDenied
 
@@ -29,6 +30,7 @@ def read(settings):
         row = conn.execute('SELECT revision,values_json FROM gateway_controls WHERE id=1').fetchone()
     values = {'reminders_paused': False, 'reminder_hours': settings.workflow_reminder_hours,
               'reminder_limit': settings.workflow_reminder_limit,
+              'quiet_enabled': False, 'quiet_start': '18:00', 'quiet_end': '08:00',
               'welcome': 'How can I help you?', 'support': 'Contact your ERP service administrator for assistance.'}
     values.update(json.loads(row['values_json']))
     return row['revision'], values
@@ -41,7 +43,9 @@ def effective(settings):
 
 
 def validate(key, value):
-    if key == 'reminders_paused' and type(value) is bool:
+    if key in ('reminders_paused', 'quiet_enabled') and type(value) is bool:
+        return
+    if key in ('quiet_start', 'quiet_end') and isinstance(value, str) and re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value):
         return
     if key == 'reminder_hours' and type(value) is int and 1 <= value <= 168:
         return
@@ -65,14 +69,19 @@ def apply(settings, phone, inbound_id, key, value, expected_revision):
             raise WorkflowDenied('Settings changed since this confirmation was shown. Open ADMIN and review them again.')
         values = json.loads(row['values_json'])
         defaults = {'reminders_paused': False, 'reminder_hours': settings.workflow_reminder_hours,
-                    'reminder_limit': settings.workflow_reminder_limit, 'welcome': 'How can I help you?',
+                    'reminder_limit': settings.workflow_reminder_limit,
+              'quiet_enabled': False, 'quiet_start': '18:00', 'quiet_end': '08:00', 'welcome': 'How can I help you?',
                     'support': 'Contact your ERP service administrator for assistance.'}
         old = values.get(key, defaults[key])
         values[key] = value
+        if key.startswith('quiet_') and values.get('quiet_start', '18:00') == values.get('quiet_end', '08:00'):
+            raise WorkflowDenied('Quiet start and end must be different.')
         revision = row['revision'] + 1
         conn.execute('UPDATE gateway_controls SET revision=?,values_json=? WHERE id=1', (revision, json.dumps(values)))
         conn.execute('''INSERT INTO gateway_admin_audit(inbound_id,actor_phone,setting_key,old_json,new_json,revision,created_at)
             VALUES(?,?,?,?,?,?,?)''', (inbound_id, phone, key, json.dumps(old), json.dumps(value), revision, utc_now()))
+        if key.startswith('quiet_'):
+            conn.execute("UPDATE workflow_notifications SET next_attempt_at=? WHERE kind='reminder' AND status='pending'", (utc_now(),))
         if key.startswith('reminder'):
             conn.execute("UPDATE workflow_notifications SET status='cancelled',last_error='Reminder settings changed' WHERE kind='reminder' AND status='pending'")
             conn.execute('UPDATE workflow_watches SET next_check_at=?', (utc_now(),))
@@ -89,3 +98,22 @@ def queue_status(settings, phone):
             rows = conn.execute(f'SELECT {column} AS state,COUNT(*) AS total FROM {table} GROUP BY {column}').fetchall()
             lines.extend(['', title, ', '.join(f"{r['state']}: {r['total']}" for r in rows) or 'No records'])
     return '\n'.join(lines)
+
+
+def quiet_until(settings, now=None):
+    """Return the UTC end of today's quiet window, or None; daily Dar es Salaam time."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    _, values = read(settings)
+    if not values['quiet_enabled']:
+        return None
+    local = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo('Africa/Dar_es_Salaam'))
+    start, end = (int(v[:2]) * 60 + int(v[3:]) for v in (values['quiet_start'], values['quiet_end']))
+    minute = local.hour * 60 + local.minute
+    inside = start <= minute < end if start < end else minute >= start or minute < end
+    if not inside:
+        return None
+    finish = local.replace(hour=end // 60, minute=end % 60, second=0, microsecond=0)
+    if finish <= local:
+        finish += timedelta(days=1)
+    return finish.astimezone(timezone.utc).isoformat()

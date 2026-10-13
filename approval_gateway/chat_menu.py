@@ -7,6 +7,7 @@ from .integrations.permissions import WorkflowDenied, IntegrationUnavailable
 from . import admin_controls as controls
 
 GUIDE = {
+    'mine_help': ('My requests', 'Choose My requests to see requests you created, their status and current reviewers. Choose a company if prompted. Shortcut: MY REQUESTS OLD or MY REQUESTS NEW. Availability requires an active ERP identity binding.'),
     'pending_help': ('Pending approvals', 'Choose Pending approvals, then Oldest first or Newest first (by request creation date). Select a request for its summary and PDF. Back to pending keeps your order and page; Change order starts again. Shortcuts: PENDING OLD or PENDING NEW.'),
     'find_help': ('Find a request', 'Choose Find a request, then enter REQ 312 or PA 108 using the actual request ID. You can only view requests you are permitted to access.'),
     'decision_help': ('Approve or reject', 'Read the PDF before choosing Approve or Reject. Reject asks whether to return for correction or reject completely, then asks for a reason. Your reason is saved as a draft. Review it, then press Submit rejection. MENU pauses and saves your place; Cancel rejection keeps the request pending.'),
@@ -100,6 +101,17 @@ def handle(settings, response):
         state = session(settings, response['phone'])
         if state and state['ui'] == 'find':
             command = ui('main') if upper == 'CANCEL' else ui('find', invalid=True)
+        elif state and state['ui'] == 'admin_time':
+            if upper == 'CANCEL':
+                command = ui('admin_quiet')
+            elif not controls.is_admin(settings, response['phone']):
+                command = ui('denied')
+            else:
+                try:
+                    controls.validate(state['key'], text)
+                    command = ui('admin_propose', key=state['key'], value=text)
+                except WorkflowDenied:
+                    command = ui('admin_time', key=state['key'])
         elif state and state['ui'] == 'admin_text':
             if upper == 'CANCEL':
                 command = ui('admin')
@@ -186,6 +198,7 @@ def prepare(settings, job, command):
         set_session(settings, phone, None)
         _, values = controls.read(settings)
         options = [('Pending approvals', {'kind': None, 'reference': None, 'company': None, 'cursor': 0}),
+                   ('My requests', {'kind': None, 'reference': None, 'company': None, 'cursor': 0, 'scope':'mine'}),
                    ('Find a request', ui('find')), ('User guide', ui('guide')), ('Contact support', ui('support'))]
         active = rejection(settings, phone)
         if active:
@@ -199,13 +212,13 @@ def prepare(settings, job, command):
         if len(services) > 1:
             options.insert(0, ('Switch service' if service else 'Choose service', ui('services')))
             if not service:
-                options = [o for o in options if o[0] not in ('Pending approvals', 'Find a request')]
+                options = [o for o in options if o[0] not in ('Pending approvals', 'My requests', 'Find a request')]
         body = '*' + title + '*\n' + values['welcome']
         if unavailable and not service:
             body += '\nService verification is temporarily unavailable.'
         # Only supported inbox adapters are shown, never send another ERP's command to PETA.
         if service and service['system'] != 'peta':
-            options = [o for o in options if o[0] not in ('Pending approvals', 'Find a request')]
+            options = [o for o in options if o[0] not in ('Pending approvals', 'My requests', 'Find a request')]
             body += '\nRequest browsing for this service is not configured yet.'
 
         if active:
@@ -246,7 +259,7 @@ def prepare(settings, job, command):
         return page('Main menu pauses without deleting your rejection draft. Choose Resume rejection to continue here. Sending a reason saves a draft; only Submit rejection sends it. Cancel rejection keeps the request pending. Drafts expire with the rejection session or task. When enabled, Open rejection form lets you choose an action and enter a reason together. Review rejection returns a draft to chat; Submit rejection is still required. If the form cannot open, use Continue rejection.',
                     ('Resume rejection', ui('rejections')), ('User guide', ui('guide')), back)
     if name == 'admin_help':
-        return page('Admin controls are available from Main menu or the ADMIN shortcut. Change reminders, welcome/support text, view queues and recent changes. Settings apply across gateway companies and require confirmation. Admin access does not grant approval permissions.',
+        return page('Admin controls are available from Main menu or the ADMIN shortcut. Change reminders and quiet hours (ADMIN > Reminder settings > Quiet hours), welcome/support text, view queues, delivery receipts and recent changes. Settings apply across gateway companies and require confirmation. Admin access does not grant approval permissions.',
                     ('Admin controls', ui('admin')), ('User guide', ui('guide')), back)
     if name in GUIDE:
         title, body = GUIDE[name]
@@ -345,14 +358,23 @@ def prepare(settings, job, command):
     if name == 'admin':
         set_session(settings, phone, None)
         return page('*GATEWAY ADMIN*\nScope: all gateway companies\nChoose a control.',
-                    ('Reminder settings', ui('admin_reminders')), ('Queue status', ui('admin_status')),
+                    ('Reminder settings', ui('admin_reminders')), ('Queue status', ui('admin_status')), ('Delivery monitor', ui('admin_delivery')),
                     ('Help content', ui('admin_content')), ('Recent changes', ui('admin_audit')), back)
     if name == 'admin_reminders':
         state = 'Paused' if values['reminders_paused'] else ('Off (limit 0)' if not values['reminder_limit'] else 'On')
         body = f"*REMINDER SETTINGS*\nScope: all gateway companies\nReminders: {state}\nInterval: {values['reminder_hours']} hours\nMaximum: {values['reminder_limit']} per stage\nAutomatic notifications: {'On' if settings.workflow_notifications_enabled else 'Off in environment'}"
-        return page(body, ('Change interval', ui('admin_interval')), ('Change maximum', ui('admin_limit')),
+        return page(body, ('Change interval', ui('admin_interval')), ('Change maximum', ui('admin_limit')), ('Quiet hours', ui('admin_quiet')),
                     ('Resume reminders' if values['reminders_paused'] else 'Pause reminders', ui('admin_propose', key='reminders_paused', value=not values['reminders_paused'])), admin_back)
+    if name == 'admin_quiet':
+        body = f"*QUIET HOURS*\nScope: all gateway companies\nTimezone: Africa/Dar_es_Salaam\nStatus: {'On' if values['quiet_enabled'] else 'Off'}\nQuiet from {values['quiet_start']} until {values['quiet_end']} daily.\nOnly automatic reminders wait. Requests, decisions and replies continue normally."
+        return page(body, ('Disable quiet hours' if values['quiet_enabled'] else 'Enable quiet hours', ui('admin_propose', key='quiet_enabled', value=not values['quiet_enabled'])),
+            ('Set start time', ui('admin_time', key='quiet_start')), ('Set end time', ui('admin_time', key='quiet_end')), admin_back)
+    if name == 'admin_time':
+        if command['key'] not in ('quiet_start', 'quiet_end'): raise WorkflowDenied('Invalid time setting.')
+        set_session(settings, phone, ui('admin_time', key=command['key']))
+        return page('Send a time in 24-hour HH:MM format, for example 18:00 or 08:00. Timezone: Africa/Dar_es_Salaam. You will confirm before saving. Type CANCEL to exit.', admin_back)
     if name in ('admin_interval', 'admin_limit'):
+
         key = 'reminder_hours' if name == 'admin_interval' else 'reminder_limit'
         choices = (1, 4, 6, 12, 24) if key == 'reminder_hours' else (0, 1, 3, 5, 10)
         return page('*REMINDER SETTINGS*\nSelect a value.',
@@ -373,6 +395,9 @@ def prepare(settings, job, command):
     if name == 'admin_apply':
         result = controls.apply(settings, phone, job['inbound_id'], command['key'], command['value'], command['revision'])
         return page(result, admin_back, back)
+    if name == 'admin_delivery':
+        from .delivery_monitor import report
+        return page(report(settings, phone), admin_back)
     if name == 'admin_status':
         return page(controls.queue_status(settings, phone), admin_back)
     if name == 'admin_audit':

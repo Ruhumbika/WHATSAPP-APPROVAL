@@ -59,7 +59,7 @@ class ChatMenuTests(unittest.TestCase):
     def test_unknown_text_returns_main_without_decision(self):
         self.send('What can this assistant do?')
         options = json.loads(self.jobs()[-1]['actions_json'])
-        self.assertEqual([o['title'] for o in options], ['Pending approvals', 'Find a request', 'User guide', 'Contact support', 'Admin controls'])
+        self.assertEqual([o['title'] for o in options], ['Pending approvals', 'My requests', 'Find a request', 'User guide', 'Contact support', 'Admin controls'])
 
     def test_help_topics_and_find_validation(self):
         self.send('HELP')

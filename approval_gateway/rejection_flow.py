@@ -23,8 +23,78 @@ def fingerprint(task):
     return hashlib.sha256(json.dumps([task[k] for k in fields]).encode()).hexdigest()
 
 
-def prepare(settings, job, task):
+def items_preview(snapshot):
+    """Show at most three ERP material/account lines; never truncate request totals."""
+    from decimal import Decimal, InvalidOperation
+    from .inbox import clean
+
+    def number(value):
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            result = Decimal(str(value))
+            return result if result.is_finite() and abs(result) < Decimal('1e18') else None
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+
+    lines = []
+    count = 0
+    for group in snapshot.get('items') or []:
+        if not isinstance(group, dict):
+            continue
+        for kind, entries in (('material', group.get('materials') or []),
+                              ('account', group.get('accounts') or [])):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                count += 1
+                if len(lines) >= 3:
+                    continue
+                name = clean(entry.get('item_name') if kind == 'material' else entry.get('account_name'), 80) or 'Unnamed item'
+                detail = 'See request PDF for pricing'
+                currency = clean(entry.get('currency') or group.get('currency'), 12)
+                if kind == 'material':
+                    qty, rate = number(entry.get('quantity')), number(entry.get('rate'))
+                    if qty is not None and rate is not None and currency:
+                        quantity = format(qty, ',.2f').rstrip('0').rstrip('.')
+                        detail = f"{quantity} × {currency} {rate:,.2f} = {currency} {qty * rate:,.2f} (before adjustments)"
+                    elif qty is not None:
+                        detail = f"Qty: {qty:,.2f} — see PDF for pricing"
+                lines.append(f"{count}. {name}\n{detail}")
+    if not count:
+        return 'Item details: see request PDF.'
+    text = f"Items ({count})\n" + '\n\n'.join(lines)
+    if count > 3:
+        text += f"\n\n+ {count - 3} more items — see request PDF"
+    return text
+
+
+def summary_data(task):
+    """Display only the server-held snapshot, never completion-supplied identity."""
     from .chat_menu import task_label
+    from .inbox import clean
+    from .integrations.permissions import IntegrationUnavailable
+    payload = json.loads(task['payload_json'])
+    snapshot = payload.get('record_snapshot') or {}
+    company = clean(snapshot.get('company_name') or payload.get('company_name'), 120)
+    if not company:
+        company = f"{clean(task['source_system'], 40).upper()} / Company {clean(task['company'], 40)}"
+    requester = snapshot.get('requested_by') or payload.get('requested_by')
+    amount = snapshot.get('total_display') or payload.get('total_display')
+    if not amount and task['source_system'] == 'peta' and snapshot.get('items'):
+        try:
+            from .integrations.peta import _detailed_message_fields
+            amount = _detailed_message_fields(snapshot)['total_display']
+        except (ValueError, KeyError, TypeError, IntegrationUnavailable):
+            pass
+    return {
+        'request_label': clean(task_label(task), 120),
+        'request_items': items_preview(snapshot),
+        'request_summary': f"Company: {company}\nAmount: {clean(amount, 240) or 'See request PDF'}\nRequested by: {clean(requester, 120) or 'Not provided'}",
+    }
+
+
+def prepare(settings, job, task):
     if not settings.whatsapp_rejection_flow_enabled:
         raise WorkflowDenied('The form is unavailable. Send HELP and choose Continue rejection.')
     now = utc_now()
@@ -47,11 +117,12 @@ def prepare(settings, job, task):
                           (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat())
             conn.execute('INSERT INTO rejection_flows VALUES(?,?,?,?,?,?,?)',
                          (token, job['id'], task['id'], job['phone'], fingerprint(current), expires, 'open'))
-    label = task_label(task)[:120]
+    display = summary_data(current)
+    label = display['request_label']
     body = (f'*{label} — REJECTION FORM*\nChoose an action and explain why. '
-            'Review rejection saves a draft; confirm it in chat before anything is submitted.\n\n'
+            'Review your draft, then choose Continue to chat. Confirm in chat before anything is submitted.\n\n'
             'Form expires in 15 minutes. If it cannot open, send HELP and choose Continue rejection.')
-    return body, {'flow_token': token, 'request_label': label}, task['id']
+    return body, dict(display, flow_token=token), task['id']
 
 
 def handle(settings, response):

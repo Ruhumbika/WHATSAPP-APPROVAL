@@ -32,6 +32,9 @@ def init_schema(conn):
 
 def parse(text):
     text = text.strip()
+    mine = bool(re.match(r'^MY\s+REQUESTS(?:\s|$)', text, re.I))
+    if mine:
+        text = re.sub(r'^MY\s+REQUESTS', 'PENDING', text, flags=re.I)
     order = None
     suffix = re.fullmatch(r'(PENDING.*?)\s+(OLD|NEW)', text, re.I)
     if suffix:
@@ -41,6 +44,8 @@ def parse(text):
         return None
     result = {'kind': KINDS.get((match[3] or '').upper()), 'reference': match[4],
             'company': match[1] or match[5], 'cursor': int(match[2] or 0)}
+    if mine:
+        result['scope'] = 'mine'
     if order:
         result['order'] = order
     return result
@@ -51,6 +56,12 @@ def guard_for(kind=None):
     if hasattr(guard, '_guard'):
         guard = guard._guard({'request_type': TYPES.get(kind, 'requisition_approval')})
     return guard
+
+
+class CompanyChoice(WorkflowDenied):
+    def __init__(self, matches):
+        super().__init__("Select a company")
+        self.matches = matches
 
 
 def identity(settings, phone, command, binding_id=None):
@@ -96,15 +107,14 @@ def identity(settings, phone, command, binding_id=None):
     if len({r['directory_uuid'] for r in matches}) != 1:
         raise WorkflowDenied('This phone has conflicting identities. Contact support.')
     if len(matches) != 1:
-        companies = ', '.join('C' + r['company'] for r in matches)
-        raise WorkflowDenied(f'Select a company: PENDING C1 or REQ 312 C1. Your companies: {companies}')
+        raise CompanyChoice(matches)
     return matches[0], guard
 
 
 def read_api(guard, binding, command):
     client = PetaClient(guard.peta.base_url, guard.peta.document_access_token,
                        allow_local_http=guard.peta.base_url.startswith('http://'), timeout_seconds=guard.peta.timeout_seconds)
-    query = urlencode({'actor_user_id': binding['source_user_id'], 'company_id': binding['company'], 'cursor': command['cursor'], 'order': command.get('order', 'oldest')})
+    query = urlencode({'actor_user_id': binding['source_user_id'], 'company_id': binding['company'], 'cursor': command['cursor'], 'order': command.get('order', 'oldest'), 'scope': command.get('scope', 'pending')})
     path = 'whatsapp-approvals/inbox'
     if command['kind']:
         path += f"/{command['kind']}/{command['reference']}"
@@ -128,9 +138,13 @@ def read_api(guard, binding, command):
             raise WorkflowDenied('Pending order is unavailable. The ERP inbox needs its latest update. Contact support.')
         if data.get('actor_user_id') != binding['source_user_id'] or not isinstance(data.get('items'), list) or len(data['items']) > 5:
             raise IntegrationUnavailable('Invalid inbox page')
+        if command.get('scope') == 'mine' and data.get('scope') != 'mine':
+            raise WorkflowDenied('MY REQUESTS requires the updated ERP inbox.')
         for item in data['items']:
             validate_item(item, binding)
-            if item['can_act'] is not True:
+            if command.get('scope') == 'mine' and item.get('creator_id') != binding['source_user_id']:
+                raise WorkflowDenied('Creator identity mismatch')
+            if command.get('scope') != 'mine' and item['can_act'] is not True:
                 raise IntegrationUnavailable('Inbox contains a non-actionable record')
         cursor = data.get('next_cursor')
         if cursor is not None and (type(cursor) is not int or not command['cursor'] < cursor <= 1000000):
@@ -165,7 +179,8 @@ def summary(item):
             f"{clean(item.get('purpose')) or 'Purpose not recorded'}\n"
             f"Requested by: {clean(item.get('requester'), 60)}\n"
             f"Status: {clean(item.get('status'), 40)} · {item['completed_steps']}/{item['total_steps']} steps\n"
-            f"Current: {clean(step.get('action'), 30)} {clean(step.get('position'), 50)}".rstrip())
+            f"Current: {clean(step.get('action'), 30)} {clean(step.get('position'), 50)}\n"
+            f"Waiting for: {clean(', '.join(item.get('waiting_for') or []), 180) or ('Reviewer details unavailable' if step else 'No current reviewer')}".rstrip())
 
 
 def age_label(item):
@@ -272,13 +287,22 @@ def prepare(settings, job):
         raise WorkflowDenied('Choose your ERP service from Main menu before opening requests.')
     if selection and selection['system_name'] != 'peta':
         raise WorkflowDenied('Switch to the appropriate ERP service before opening its requests.')
-    binding, guard = identity(settings, job['phone'], command, job.get('binding_id'))
+    try:
+        binding, guard = identity(settings, job['phone'], command, job.get('binding_id'))
+    except CompanyChoice as choice:
+        from .chat_menu import page, ui
+        offset = max(0, int(command.get('company_offset', 0)))
+        options = [('Company C' + row['company'], dict(command, company=row['company'], cursor=0)) for row in choice.matches[offset:offset+8]]
+        if len(choice.matches) > offset+8:
+            options.append(('More companies', dict(command, company_offset=offset+8)))
+        options.append(('Main menu', ui('main')))
+        return page('Choose a company. Access is verified again when selected.', *options)
     # Pin the verified identity for retries, including phone reassignments.
     with connection(settings) as conn:
         conn.execute('UPDATE inbox_replies SET binding_id=? WHERE id=?', (binding['id'], job['id']))
     if not command['kind'] and not command.get('order'):
         from .chat_menu import page, ui
-        return page('*PENDING APPROVALS*\nChoose how to browse. Ordered by request creation date.',
+        return page(('*MY REQUESTS*' if command.get('scope') == 'mine' else '*PENDING APPROVALS*') + '\nChoose how to browse. Ordered by request creation date.',
                     ('Oldest first', dict(command, order='oldest', cursor=0, company=binding['company'])),
                     ('Newest first', dict(command, order='newest', cursor=0, company=binding['company'])),
                     ('Main menu', ui('main')))
@@ -288,12 +312,16 @@ def prepare(settings, job):
     identity(settings, job['phone'], command, binding['id'])
     if not command['kind']:
         from .chat_menu import page, ui
-        options = [(label(item), {'kind': item['kind'], 'reference': item['reference_id'], 'company': binding['company'], 'cursor': 0, 'preview': True, 'list_order': command['order'], 'list_cursor': command['cursor']}) for item in data['items']]
+        options = [(label(item), {'kind': item['kind'], 'reference': item['reference_id'], 'company': binding['company'], 'cursor': 0, 'preview': True, 'list_order': command['order'], 'list_cursor': command['cursor'], 'list_scope': command.get('scope', 'pending')}) for item in data['items']]
         if data.get('next_cursor') is not None:
             options.append(('Next page', dict(command, company=binding['company'], cursor=data['next_cursor'])))
-        options.append(('Change order', {'kind': None, 'reference': None, 'company': binding['company'], 'cursor': 0}))
+        options.append(('Change order', dict(command, order=None, cursor=0, company=binding['company'])))
+        options.append(('Change company', dict(command, company=None, cursor=0)))
         options.append(('Main menu', ui('main')))
-        return page(render_page(data, binding['company']), *options)
+        body = render_page(data, binding['company'])
+        if command.get('scope') == 'mine':
+            body = '*MY REQUESTS*\n' + '\n\n'.join(summary(item) for item in data['items']) if data['items'] else '*MY REQUESTS*\nNo requests in this batch.'
+        return page(body[:3900], *options)
     from .chat_menu import set_session
     set_session(settings, job['phone'], None)
     service = selected(settings, job['phone'], services)
@@ -301,7 +329,7 @@ def prepare(settings, job):
     if command.get('preview'):
         from .chat_menu import page, ui
         return page(body, ('View document', dict(command, preview=False)),
-                    ('Back to pending', {'kind': None, 'reference': None, 'company': binding['company'],
+                    ('Back to my requests' if command.get('list_scope') == 'mine' else 'Back to pending', {'scope': command.get('list_scope', 'pending'), 'kind': None, 'reference': None, 'company': binding['company'],
                      'cursor': command.get('list_cursor', 0), **({'order': command['list_order']} if command.get('list_order') else {})}),
                     ('Main menu', ui('main')))
 
@@ -375,7 +403,7 @@ def process_inbox(settings, client, limit):
             else:
                 dispatching = True
                 if document and 'flow_token' in document:
-                    message_id = client.send_rejection_flow(job['phone'], body, document['flow_token'], document['request_label'])
+                    message_id = client.send_rejection_flow(job['phone'], body, document['flow_token'], document['request_label'], document['request_summary'], document['request_items'])
                 elif document and 'menu_options' in document:
                     with connection(settings) as conn:
                         conn.execute('UPDATE inbox_replies SET actions_json=? WHERE id=?', (json.dumps(document['menu_options']), job['id']))

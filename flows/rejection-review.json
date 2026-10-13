@@ -1,26 +1,169 @@
 {
-  "version": "6.3",
-  "screens": [{
-    "id": "REJECTION_FORM",
-    "title": "Rejection draft",
-    "terminal": true,
-    "success": true,
-    "data": {"request_label": {"type": "string", "__example__": "REQ 312"}},
-    "layout": {"type": "SingleColumnLayout", "children": [{
-      "type": "Form", "name": "rejection", "children": [
-        {"type": "TextHeading", "text": "${data.request_label}"},
-        {"type": "TextBody", "text": "Choose an action and explain why. You will confirm your draft in chat before it is submitted."},
-        {"type": "RadioButtonsGroup", "name": "mode", "label": "Action", "required": true,
-          "data-source": [
-            {"id": "correction", "title": "Return for correction", "description": "The requester can edit and resubmit."},
-            {"id": "final", "title": "Reject completely", "description": "End this approval workflow."}
-          ]},
-        {"type": "TextArea", "name": "reason", "label": "Reason", "required": true,
-          "max-length": 2000, "helper-text": "Write 3–2000 characters."},
-        {"type": "Footer", "label": "Review rejection", "on-click-action": {
-          "name": "complete", "payload": {"mode": "${form.mode}", "reason": "${form.reason}"}
-        }}
-      ]
-    }]}
-  }]
+  "version": "7.3",
+  "screens": [
+    {
+      "id": "REJECTION_FORM",
+      "title": "Rejection details",
+      "data": {
+        "request_label": {
+          "type": "string",
+          "__example__": "REQ 312"
+        },
+        "request_summary": {
+          "type": "string",
+          "__example__": "Company: Example Company\nAmount: TZS 250,000.00\nRequested by: Example Requester"
+        },
+        "request_items": {
+          "type": "string",
+          "__example__": "Items (4)\n1. Printer toner\n2 \u00d7 TZS 85,000.00 = TZS 170,000.00 (before adjustments)\n\n2. A4 paper\n10 \u00d7 TZS 8,000.00 = TZS 80,000.00 (before adjustments)\n\n3. Pens\n5 \u00d7 TZS 1,000.00 = TZS 5,000.00 (before adjustments)\n\n+ 1 more items \u2014 see request PDF"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "rejection",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "${data.request_label}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.request_summary}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.request_items}"
+              },
+              {
+                "type": "TextBody",
+                "text": "Select an action and explain why."
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "mode",
+                "label": "Action",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "correction",
+                    "title": "Return for correction",
+                    "description": "The requester can edit and resubmit."
+                  },
+                  {
+                    "id": "final",
+                    "title": "Reject completely",
+                    "description": "End this approval workflow."
+                  }
+                ]
+              },
+              {
+                "type": "TextArea",
+                "name": "reason",
+                "label": "Reason",
+                "required": true,
+                "max-length": 2000,
+                "helper-text": "Write 3\u20132000 characters."
+              },
+              {
+                "type": "Footer",
+                "label": "Review draft",
+                "on-click-action": {
+                  "name": "navigate",
+                  "next": {
+                    "type": "screen",
+                    "name": "REJECTION_REVIEW"
+                  },
+                  "payload": {
+                    "request_label": "${data.request_label}",
+                    "request_summary": "${data.request_summary}",
+                    "mode": "${form.mode}",
+                    "reason": "${form.reason}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "REJECTION_REVIEW",
+      "title": "Review draft",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "request_label": {
+          "type": "string",
+          "__example__": "REQ 312"
+        },
+        "request_summary": {
+          "type": "string",
+          "__example__": "Company: Example Company\nAmount: TZS 250,000.00\nRequested by: Example Requester"
+        },
+        "mode": {
+          "type": "string",
+          "__example__": "correction"
+        },
+        "reason": {
+          "type": "string",
+          "__example__": "Please correct the item quantities."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "${data.request_label}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.request_summary}"
+          },
+          {
+            "type": "If",
+            "condition": "${data.mode} == 'correction'",
+            "then": [
+              {
+                "type": "TextSubheading",
+                "text": "Return for correction"
+              }
+            ],
+            "else": [
+              {
+                "type": "TextSubheading",
+                "text": "Reject completely"
+              }
+            ]
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Reason"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.reason}"
+          },
+          {
+            "type": "TextBody",
+            "text": "Use the back arrow to edit. Continue to chat to save your draft, then select Submit rejection to confirm."
+          },
+          {
+            "type": "Footer",
+            "label": "Continue to chat",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "mode": "${data.mode}",
+                "reason": "${data.reason}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
 }

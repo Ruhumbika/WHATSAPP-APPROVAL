@@ -123,7 +123,7 @@ class RejectionFlowTests(unittest.TestCase):
         params = post.call_args.args[0]['interactive']['action']['parameters']
         self.assertEqual(params['mode'], 'published')
         self.assertEqual(params['flow_token'], reply['flow_data']['flow_token'])
-        self.assertEqual(params['flow_action_payload'], {'screen':'REJECTION_FORM','data':{'request_label':'REQ 312'}})
+        self.assertEqual(params['flow_action_payload'], {'screen':'REJECTION_FORM','data':{'request_label':'REQ 312', 'request_summary':'Request details: see request PDF', 'request_items':'Item details: see request PDF.'}})
 
     def test_unknown_send_is_not_retried_or_accepted_as_delivered(self):
         from approval_gateway.inbox import process_inbox
@@ -152,8 +152,47 @@ class RejectionFlowTests(unittest.TestCase):
         screen = document['screens'][0]
         fields = screen['layout']['children'][0]['children']
         self.assertEqual(screen['id'], 'REJECTION_FORM')
-        self.assertEqual(fields[-1]['on-click-action'], {'name':'complete', 'payload':{'mode':'${form.mode}','reason':'${form.reason}'}})
-        self.assertEqual(fields[-1]['label'], 'Review rejection')
+        navigate = fields[-1]['on-click-action']
+        self.assertEqual(navigate['name'], 'navigate')
+        review = document['screens'][1]
+        self.assertEqual(navigate['next']['name'], review['id'])
+        self.assertEqual(set(navigate['payload']), set(review['data']))
+        complete = review['layout']['children'][-1]['on-click-action']
+        self.assertEqual(complete, {'name':'complete', 'payload':{'mode':'${data.mode}','reason':'${data.reason}'}})
+
+    def test_summary_is_scoped_to_task_and_missing_amount_is_not_invented(self):
+        task, _ = self.launch()
+        task = self.current(task)
+        display = flow.summary_data(task)
+        self.assertIn('Company: PETA / Company 77', display['request_summary'])
+        self.assertIn('Amount: See request PDF', display['request_summary'])
+        self.assertIn('Requested by: Daniel Hussein', display['request_summary'])
+        sent = self.client.send_rejection_flow.call_args.args
+        self.assertEqual(sent[3:5], (display['request_label'], display['request_summary']))
+        payload = json.loads(task['payload_json'])
+        payload['record_snapshot'] = {'company_name':'Another Company', 'requested_by':'Another Requester', 'total_display':'USD 500.00'}
+        display = flow.summary_data(dict(task, payload_json=json.dumps(payload)))
+        self.assertIn('Company: Another Company', display['request_summary'])
+        self.assertIn('Amount: USD 500.00', display['request_summary'])
+        self.assertIn('Requested by: Another Requester', display['request_summary'])
+
+    def test_completion_display_fields_cannot_redirect_decision(self):
+        task, reply = self.launch()
+        reply['flow_data'].update(request_label='REQ OTHER', company='999', task_id=999,
+                                  request_summary='Forged company', amount='1')
+        flow.handle(self.settings, reply)
+        self.assertEqual(self.current(task)['rejection_draft'], 'Correct the quantities')
+        self.assertEqual(self.current(task)['company'], '77')
+        self.assertEqual(self.callbacks(), 0)
+
+    def test_graph_payload_includes_server_summary(self):
+        client = WhatsAppClient(replace(self.settings, whatsapp_rejection_flow_enabled=True,
+            whatsapp_rejection_flow_id='123', dry_run_whatsapp=False))
+        with patch.object(client, '_post_graph', return_value={'messages':[{'id':'wamid.sent'}]}) as post:
+            client.send_rejection_flow(self.phone, 'Draft only', 'RFL-'+'A'*32,
+                                       'REQ 99', 'Company: Example\nAmount: USD 50')
+        data = post.call_args.args[0]['interactive']['action']['parameters']['flow_action_payload']['data']
+        self.assertEqual(data, {'request_label':'REQ 99', 'request_summary':'Company: Example\nAmount: USD 50', 'request_items':'Item details: see request PDF.'})
 
     def test_readiness_only_reads_selected_fields_and_rejects_url_injection(self):
         from approval_gateway.flow_readiness import inspect
@@ -181,3 +220,38 @@ class RejectionFlowTests(unittest.TestCase):
         self.assertFalse(self.settings.whatsapp_rejection_flow_enabled)
         with self.assertRaises(ConfigurationError):
             _validate_settings(replace(self.settings, whatsapp_rejection_flow_enabled=True, whatsapp_rejection_flow_id=''))
+
+
+class FlowItemsTests(unittest.TestCase):
+    def test_three_materials_then_exact_remaining_count(self):
+        import copy
+        record = {'company_name':'Example', 'id':9, 'items':[{
+            'currency':'TZS', 'amount_before_vat':'100', 'vat_amount':'18', 'total_amount':'118',
+            'materials':[{'item_name':f'Item {i}', 'quantity':'2', 'rate':'10'} for i in range(5)]}]}
+        before = copy.deepcopy(record)
+        result = flow.items_preview(record)
+        self.assertIn('Items (5)', result)
+        self.assertIn('3. Item 2', result)
+        self.assertNotIn('Item 3', result)
+        self.assertIn('+ 2 more items', result)
+        self.assertIn('2 × TZS 10.00 = TZS 20.00 (before adjustments)', result)
+        task = {'source_system':'peta', 'company':'1', 'source_reference_id':'9',
+                'request_type':'requisition_approval', 'payload_json':json.dumps({'record_snapshot':record})}
+        self.assertIn('TZS 118.00', flow.summary_data(task)['request_summary'])
+        self.assertEqual(record, before)
+
+    def test_missing_prices_accounts_and_currency_are_not_invented(self):
+        record = {'items':[{'materials':[{'item_name':'Cable', 'quantity':'2', 'rate':'NaN'}],
+                            'accounts':[{'account_name':'Transport'}]}]}
+        result = flow.items_preview(record)
+        self.assertIn('Items (2)', result)
+        self.assertIn('Transport', result)
+        self.assertNotIn('more items', result)
+        self.assertNotIn('NaN', result)
+        self.assertNotIn('TZS', result)
+        self.assertEqual(flow.items_preview({}), 'Item details: see request PDF.')
+
+    def test_items_only_appear_on_first_screen(self):
+        doc = json.loads((Path(__file__).resolve().parents[1]/'flows/rejection-review.json').read_text())
+        self.assertIn('request_items', doc['screens'][0]['data'])
+        self.assertNotIn('request_items', json.dumps(doc['screens'][1]))

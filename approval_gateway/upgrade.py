@@ -186,7 +186,9 @@ def _move_rejection_conversations(conn: sqlite3.Connection) -> None:
 
 
 def migrate(settings: Settings) -> None:
+    from .delivery_monitor import init_schema as init_delivery_monitor
     with connection(settings) as conn:
+        init_delivery_monitor(conn)
         # Acquire the write lock before inspecting or changing the schema.
         conn.execute("BEGIN IMMEDIATE")
 

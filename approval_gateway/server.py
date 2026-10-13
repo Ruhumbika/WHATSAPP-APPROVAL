@@ -197,6 +197,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             raise ServiceError("Invalid Meta signature.", 403)
 
         payload = self.parse_json(raw_body)
+        from .delivery_monitor import record as record_delivery
+        record_delivery(settings, payload)
         responses = list(
             extract_responses(
                 payload,

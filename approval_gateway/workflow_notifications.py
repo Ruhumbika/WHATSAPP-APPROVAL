@@ -136,6 +136,8 @@ def sync_watch(settings, watch):
                 for recipient in data['progress']['current_step']['approvers']:
                     key = digest([watch['id'], 'reminder', stage, slot, recipient['id']])
                     expires = (datetime.fromisoformat(since) + timedelta(hours=(slot + 1) * settings.workflow_reminder_hours)).isoformat()
+                    # Collapse overnight slots for the same reviewer; morning delivery rechecks ERP.
+                    conn.execute("UPDATE workflow_notifications SET status='cancelled',last_error='Superseded reminder slot' WHERE watch_id=? AND kind='reminder' AND state_key=? AND status='pending' AND recipient_json=? AND dedup_key!=?", (watch['id'], stage, json.dumps(recipient), key))
                     enqueue(conn, watch, 'reminder', stage, recipient, key, expires)
                     # Resume can revive an unsent current slot cancelled by settings.
                     conn.execute("""UPDATE workflow_notifications SET status='pending',last_error=NULL,
@@ -287,6 +289,14 @@ def prepare_send(settings, job, watch):
 
 
 def send_job(settings, client, job):
+    if job['kind'] == 'reminder':
+        from .admin_controls import quiet_until
+        until = quiet_until(settings)
+        if until:
+            with connection(settings) as conn:
+                expiry = (datetime.fromisoformat(until) + timedelta(hours=1)).isoformat()
+                conn.execute("UPDATE workflow_notifications SET next_attempt_at=?, expires_at=CASE WHEN expires_at IS NULL OR expires_at<? THEN ? ELSE expires_at END,last_error='Deferred: quiet hours' WHERE id=? AND status='pending'", (until, expiry, expiry, job['id']))
+            return
     with connection(settings) as conn:
         watch = dict(conn.execute('SELECT * FROM workflow_watches WHERE id=?', (job['watch_id'],)).fetchone())
         if job['expires_at'] and job['expires_at'] <= utc_now():

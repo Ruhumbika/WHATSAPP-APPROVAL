@@ -190,7 +190,7 @@ class InboxTests(unittest.TestCase):
         with connection(self.settings) as conn:
             conn.execute("INSERT INTO actor_bindings(system_name,company,directory_uuid,source_user_id,approver_id,active) SELECT system_name,'88',directory_uuid,source_user_id,approver_id,active FROM actor_bindings LIMIT 1")
         self.run_command()
-        self.assertIn('Select a company', self.client.send_text.call_args.args[1])
+        self.assertIn('Choose a company', self.client.send_menu.call_args.args[1])
         self.reply['message_id'] = 'inbox-2'
         self.run_command('PENDING C77 OLD')
         self.assertIn('REQ 9', self.client.send_menu.call_args.args[1])
@@ -345,3 +345,22 @@ class InboxTests(unittest.TestCase):
         self.client.send_inbox_document.reset_mock()
         self.run_command('REQ 9')
         self.client.send_inbox_document.assert_not_called()
+
+
+    def test_my_requests_requires_creator_and_scope_acknowledgement(self):
+        self.page['scope'] = 'mine'
+        self.item['creator_id'] = '42'
+        self.item['can_act'] = False
+        result = self.run_command('MY REQUESTS OLD')
+        self.assertIn('MY REQUESTS', self.client.send_menu.call_args.args[1])
+        self.assertEqual(result['status'], 'simulated')
+
+    def test_my_requests_denies_another_creator(self):
+        self.page['scope'] = 'mine'
+        self.item['creator_id'] = '999'
+        self.run_command('MY REQUESTS OLD')
+        self.assertIn('Creator identity mismatch', self.client.send_text.call_args.args[1])
+
+    def test_my_requests_does_not_silently_use_old_erp(self):
+        self.run_command('MY REQUESTS OLD')
+        self.assertIn('updated ERP', self.client.send_text.call_args.args[1])
