@@ -214,6 +214,19 @@ class WorkflowIntegrationTests(unittest.TestCase):
             result = run_once(self.settings)
         return result, client
 
+    def test_completed_event_enrolls_notifications_even_without_pending_tasks(self):
+        self.settings = replace(self.settings, workflow_notifications_enabled=True)
+        self.trigger()
+        with connection(self.settings) as conn:
+            conn.execute("UPDATE workflow_events SET status='processing',attempts=1")
+        adapter = Mock()
+        adapter.resolve_workflow_event.return_value = ()
+        with patch('approval_gateway.service.get_workflow_guard', return_value=adapter):
+            process_workflow_event(self.settings, 1)
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute('SELECT reference_id FROM workflow_watches').fetchone()[0], '9')
+            self.assertEqual(conn.execute('SELECT status FROM workflow_events').fetchone()[0], 'completed')
+
     def test_event_to_delivery_and_next_step(self):
         self.trigger()
         result, client = self.run_worker()

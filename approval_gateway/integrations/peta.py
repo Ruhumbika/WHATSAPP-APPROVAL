@@ -435,18 +435,13 @@ def _detailed_message_fields(record: Mapping[str, Any]) -> dict[str, str]:
             amounts[index] += number(item.get(field))
         for material in item.get("materials", []):
             quantity = number(material.get("quantity"))
-            rate = number(material.get("rate"))
-            summaries.append(
-                f"{text(material.get('item_name'))}: "
-                f"{quantity:,.2f} {text(material.get('unit'))} "
-                f"× {text(material.get('currency'), currency)} {rate:,.2f}"
-            )
+            name = text(material.get('item_name'))
+            name = name if len(name) <= 60 else name[:57].rstrip() + "…"
+            quantity_text = f"{quantity:,.2f}".rstrip("0").rstrip(".")
+            summaries.append(f"{name} ({quantity_text} {text(material.get('unit'))})")
         for account in item.get("accounts", []):
-            summaries.append(
-                f"{text(account.get('account_name'))}: "
-                f"{text(account.get('currency'), currency)} "
-                f"{number(account.get('amount')):,.2f}"
-            )
+            name = text(account.get('account_name'))
+            summaries.append(name if len(name) <= 60 else name[:57].rstrip() + "…")
 
     def amount_display(index: int) -> str:
         return "; ".join(
@@ -462,15 +457,10 @@ def _detailed_message_fields(record: Mapping[str, Any]) -> dict[str, str]:
         )
         return "; ".join(value for value in values if value) or "Not provided"
 
-    # Summarize lengthy requests explicitly; the PDF retains all item details.
-    item_summary = "; ".join(summaries[:3]) or "See attached PDF"
-    if len(summaries) > 3:
-        item_summary += f"; +{len(summaries) - 3} more entries in PDF"
-    if len(item_summary) > 260:
-        item_summary = (
-            item_summary[:220].rstrip()
-            + "… Full item details in attached PDF."
-        )
+    # Keep the chat scannable; the attached PDF retains rates and full item details.
+    item_summary = "; ".join(summaries[:2]) or "See attached PDF"
+    if len(summaries) > 2:
+        item_summary += f"; +{len(summaries) - 2} more in PDF"
     reason = text(record.get("remarks"))
     if len(reason) > 180:
         reason = reason[:140].rstrip() + "… Full reason in attached PDF."

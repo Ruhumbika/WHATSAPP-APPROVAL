@@ -191,4 +191,10 @@ def migrate(settings: Settings) -> None:
         for statement in _SCHEMA_STATEMENTS:
             conn.execute(statement)
 
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(decision_repeat_notifications)")}
+        if "payload_json" not in columns:
+            conn.execute("ALTER TABLE decision_repeat_notifications ADD COLUMN payload_json TEXT")
+
+        from .workflow_notifications import init_schema
+        init_schema(conn)
         _backfill_delivery_state(conn)

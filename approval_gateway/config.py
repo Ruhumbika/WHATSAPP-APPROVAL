@@ -121,6 +121,9 @@ class Settings:
 
     # Integration-specific settings live in a separate operator-managed file.
     integrations_config_path: str | None = None
+    workflow_notifications_enabled: bool = False
+    workflow_reminder_hours: int = 6
+    workflow_reminder_limit: int = 3
 
 
 def _validate_settings(settings: Settings) -> None:
@@ -249,6 +252,9 @@ def load_settings() -> Settings:
             "DRY_RUN_WHATSAPP",
             True,
         ),
+        workflow_notifications_enabled=_get_bool(values, "WORKFLOW_NOTIFICATIONS_ENABLED", False),
+        workflow_reminder_hours=_get_int(values, "WORKFLOW_REMINDER_HOURS", 6, minimum=1, maximum=168),
+        workflow_reminder_limit=_get_int(values, "WORKFLOW_REMINDER_LIMIT", 3, minimum=0, maximum=10),
         integrations_config_path=_resolve_path(
             values.get("INTEGRATIONS_CONFIG_PATH", "config/integrations.json"),
             "INTEGRATIONS_CONFIG_PATH",

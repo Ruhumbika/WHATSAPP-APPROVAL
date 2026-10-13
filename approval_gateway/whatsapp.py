@@ -270,6 +270,76 @@ class WhatsAppClient:
 
         return self._message_id(self._post_graph(payload))
 
+    def send_workflow_template(self, phone, name, parameters, token, document=None):
+        counts = {"workflow_progress_update": 7, "workflow_action_reminder": 5, "workflow_completed_document": 4}
+        if name not in counts or len(parameters) != counts[name]:
+            raise ValueError("Invalid workflow template parameters.")
+        if not re.fullmatch(r"WNF-[A-F0-9]{32}", token):
+            raise ValueError("Invalid workflow notification reference.")
+        components = []
+        if name == "workflow_completed_document":
+            components.append(self._document_header(document or {}))
+        components.append({"type": "body", "parameters": [
+            {"type": "text", "text": " ".join(_text(value, "workflow parameter", MAX_TEMPLATE_FIELD_LENGTH).split())}
+            for value in parameters
+        ]})
+        view = "request" if name == "workflow_action_reminder" else "progress"
+        components.append(self._decision_button("0", "workflow_" + view, token))
+        payload = {"messaging_product": "whatsapp", "to": normalize_phone(phone), "type": "template",
+                   "template": {"name": name, "language": {"code": self.settings.whatsapp_template_language}, "components": components}}
+        if self.settings.dry_run_whatsapp:
+            return "dry-run-" + token
+        return self._message_id(self._post_graph(payload))
+
+    def send_document(self, phone, document, caption):
+        value = self._document_header(document)["parameters"][0]["document"]
+        value["caption"] = _text(caption, "caption", 1024)
+        payload = {"messaging_product": "whatsapp", "to": normalize_phone(phone), "type": "document", "document": value}
+        if self.settings.dry_run_whatsapp:
+            return "dry-run-document"
+        return self._message_id(self._post_graph(payload))
+
+    def send_rejection_choices(self, phone: str, body: str, reference: str) -> str:
+        # Called only for a verified inbound rejection inside its reply window.
+        if not re.fullmatch(r"AGR-[A-Z0-9]{1,96}", reference):
+            raise ValueError("Invalid rejection reference.")
+        payload = {
+            "messaging_product": "whatsapp", "to": normalize_phone(phone), "type": "interactive",
+            "interactive": {
+                "type": "button", "body": {"text": _text(body, "body", 1024)},
+                "action": {"buttons": [
+                    {"type": "reply", "reply": {"id": f"choice_{choice}_{reference}", "title": title}}
+                    for choice, title in (("1", "Return to edit"), ("2", "Reject completely"), ("3", "Cancel"))
+                ]},
+            },
+        }
+        if self.settings.dry_run_whatsapp:
+            return "dry-run-rejection-" + reference
+        return self._message_id(self._post_graph(payload))
+
+    def send_progress(self, phone: str, reference: str, parameters: list[str]) -> str:
+        if not re.fullmatch(r"AGR-[A-Z0-9]{1,96}", reference):
+            raise ValueError("Invalid progress reference.")
+        if len(parameters) != 7:
+            raise ValueError("Progress template requires seven parameters.")
+        payload = {
+            "messaging_product": "whatsapp", "to": normalize_phone(phone), "type": "template",
+            "template": {
+                "name": "workflow_progress_update",
+                "language": {"code": self.settings.whatsapp_template_language},
+                "components": [
+                    {"type": "body", "parameters": [
+                        {"type": "text", "text": " ".join(_text(value, "progress parameter", MAX_TEMPLATE_FIELD_LENGTH).split())}
+                        for value in parameters
+                    ]},
+                    self._decision_button("0", "progress", reference),
+                ],
+            },
+        }
+        if self.settings.dry_run_whatsapp:
+            return "dry-run-progress-" + reference
+        return self._message_id(self._post_graph(payload))
+
     def send_text(self, to_phone_number: str, text: str) -> str:
         # The caller must confirm an open customer-service window.
         phone = normalize_phone(to_phone_number)

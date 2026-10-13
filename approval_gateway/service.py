@@ -768,6 +768,9 @@ def process_workflow_event(
                     "workflow_event_id": event["event_id"],
                 },
             )
+        if settings.workflow_notifications_enabled and system == "peta":
+            from .workflow_notifications import watch_event
+            watch_event(conn, event)
         conn.execute(
             """UPDATE workflow_events
                SET status = 'completed', last_error = NULL, updated_at = ?

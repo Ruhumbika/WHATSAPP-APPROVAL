@@ -211,7 +211,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
         results = []
         for response in responses:
             try:
-                result = decide(settings, response)
+                from .progress import handle_progress
+
+                result = handle_progress(settings, response)
+                if result is None and response.get("action") == "workflow_view":
+                    from .workflow_notifications import handle_view
+                    result = handle_view(settings, response)
+                if result is None:
+                    result = decide(settings, response)
                 results.append(result)
                 logger.info(
                     "WhatsApp decision processed=%s; reason=%s.",

@@ -152,6 +152,32 @@ def extract_responses(
 
                 original_text, is_button = content
 
+                workflow = re.fullmatch(r"workflow_(progress|request)_(WNF-[A-F0-9]{32})", original_text) if is_button else None
+                if workflow:
+                    yield {
+                        "action": "workflow_view", "view": workflow[1], "reference": workflow[2],
+                        "context_id": context_id, "phone": phone, "message_id": message_id,
+                        "text": "View workflow", "timestamp": message.get("timestamp"),
+                    }
+                    continue
+
+                choice = re.fullmatch(r"choice_([123])_(AGR-[A-Z0-9]{1,96})", original_text) if is_button else None
+                if choice:
+                    yield {
+                        "action": "conversation", "reference": choice[2],
+                        "context_id": context_id, "phone": phone, "message_id": message_id,
+                        "text": choice[1], "timestamp": message.get("timestamp"),
+                    }
+                    continue
+
+                if is_button and re.fullmatch(r"progress_AGR-[A-Z0-9]{1,96}", original_text):
+                    yield {
+                        "action": "progress", "reference": original_text[len("progress_"):],
+                        "context_id": context_id, "phone": phone, "message_id": message_id,
+                        "text": "View progress", "timestamp": message.get("timestamp"),
+                    }
+                    continue
+
                 if is_button:
                     match = _BUTTON_PATTERN.fullmatch(original_text)
                 else:
@@ -171,6 +197,7 @@ def extract_responses(
                             "phone": phone,
                             "message_id": message_id,
                             "text": original_text,
+                            "timestamp": message.get("timestamp"),
                         }
                     continue
 
@@ -195,4 +222,5 @@ def extract_responses(
                     "phone": phone,
                     "message_id": message_id,
                     "text": original_text,
+                    "timestamp": message.get("timestamp"),
                 }

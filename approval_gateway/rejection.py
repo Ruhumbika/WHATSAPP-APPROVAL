@@ -1,8 +1,17 @@
 """Persist task-scoped rejection conversations before committing an ERP decision."""
 
 from datetime import datetime, timedelta
+import json
 
 from .db import connection, utc_now
+
+
+CHOICE_PROMPT = (
+    "*How would you like to proceed?*\n\n"
+    "*Return for correction*\nThe requester can edit and resubmit.\n\n"
+    "*Reject completely*\nEnd this approval workflow.\n\n"
+    "No decision has been submitted."
+)
 
 
 def _prompt(conn, task, response, body, now):
@@ -10,16 +19,17 @@ def _prompt(conn, task, response, body, now):
         datetime.fromisoformat(now) + timedelta(hours=23, minutes=55)
     ).isoformat()
     label = "Payment Advice" if task["request_type"] == "payment_advice_approval" else "Requisition"
-    body = f"{label} {task['source_reference_id']} | {task['gateway_reference_id']}\n{body}"
+    payload = json.dumps({"type": "rejection_choice", "reference": task["gateway_reference_id"]}) if body == CHOICE_PROMPT else None
+    body = f"*{label} #{task['source_reference_id']}*\n\n{body}"
     conn.execute(
-        "UPDATE decision_repeat_notifications SET status='expired',updated_at=? WHERE approval_request_id=? AND status='pending'",
+        "UPDATE decision_repeat_notifications SET status='expired',updated_at=? WHERE approval_request_id=? AND status='pending' AND (payload_json IS NULL OR json_extract(payload_json, '$.type')='rejection_choice')",
         (now, task["id"]),
     )
     conn.execute(
         """INSERT INTO decision_repeat_notifications
         (approval_request_id, inbound_message_id, kind, phone, body,
-         next_attempt_at, expires_at, created_at, updated_at)
-        VALUES (?, ?, 'received', ?, ?, ?, ?, ?, ?)
+         next_attempt_at, expires_at, created_at, updated_at, payload_json)
+        VALUES (?, ?, 'received', ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(inbound_message_id) DO NOTHING""",
         (
             task["id"],
@@ -30,6 +40,7 @@ def _prompt(conn, task, response, body, now):
             expires,
             now,
             now,
+            payload,
         ),
     )
 
@@ -173,11 +184,11 @@ def route_response(settings, response):
                     WHERE id=?""",
                     (expires, now, task["id"]),
                 )
-                body = "Choose: 1 — Return for correction; 2 — Reject completely; 3 — Cancel. Reply to this message with 1, 2 or 3. No rejection has been submitted yet."
+                body = CHOICE_PROMPT
             elif conversation["rejection_phase"] == "reason":
-                body = "Please reply with the reason (3–2000 characters), or CANCEL. No rejection has been submitted yet."
+                body = "*Reason required*\n\nReply with the reason (3–2000 characters).\nSend CANCEL to keep the request pending.\n\nSending the reason submits your decision."
             else:
-                body = "Choose 1 — Return for correction; 2 — Reject completely; 3 — Cancel."
+                body = CHOICE_PROMPT
         elif not active:
             return {
                 "processed": False,
@@ -198,14 +209,14 @@ def route_response(settings, response):
                 )
                 body = (
                     (
-                        "Return for correction selected. "
+                        "*Return for correction*\n\n"
                         if mode == "correction"
-                        else "Complete rejection selected. "
+                        else "*Reject completely*\n\n"
                     )
-                    + "Reply to this message with the reason (3–2000 characters), or CANCEL. Sending the reason submits this decision to PETA."
+                    + "Reply with the reason (3–2000 characters).\nSend CANCEL to keep the request pending.\n\nSending the reason submits your decision to PETA."
                 )
             else:
-                body = "Please choose 1 — Return for correction; 2 — Reject completely; 3 — Cancel."
+                body = CHOICE_PROMPT
         elif not 3 <= len(text.strip()) <= 2000 or command in {"1", "2"}:
             body = "Please write a reason of 3–2000 characters, or CANCEL."
         else:

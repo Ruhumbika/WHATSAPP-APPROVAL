@@ -722,6 +722,9 @@ def run_once(settings: Settings, limit: int = 25) -> dict[str, Any]:
             callbacks += 1
             _send_callback(settings, callback)
         process_notifications(settings, client, limit)
+        if settings.workflow_notifications_enabled:
+            from .workflow_notifications import process_automatic_notifications
+            process_automatic_notifications(settings, client, limit)
         return {
             "workflow_events": events,
             "delivery_attempts": deliveries,

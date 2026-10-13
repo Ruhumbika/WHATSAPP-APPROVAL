@@ -194,11 +194,24 @@ def _process_queue(settings, client, limit, table):
                 SET status='sending', attempts=?, updated_at=? WHERE id=?""",
                 (attempts, now, notification["id"]),
             )
+        from .service import ServiceError
         status, message_id, error = "sent", None, None
         try:
-            message_id = client.send_text(
-                notification["phone"], notification["body"]
-            )
+            if notification.get("payload_json"):
+                from .progress import prepare_progress, template_parameters
+                payload = json.loads(notification["payload_json"])
+                if payload.get("type") == "rejection_choice":
+                    message_id = client.send_rejection_choices(notification["phone"], notification["body"], payload["reference"])
+                elif payload.get("type") == "progress" and payload["response"]["phone"] == notification["phone"]:
+                    task, data, body = prepare_progress(settings, payload["response"])
+                    if payload["response"].get("action") == "progress":
+                        message_id = client.send_text(notification["phone"], body)
+                    else:
+                        message_id = client.send_progress(notification["phone"], task["gateway_reference_id"], template_parameters(data))
+                else:
+                    raise ValueError("Invalid queued notification.")
+            else:
+                message_id = client.send_text(notification["phone"], notification["body"])
             if not isinstance(message_id, str) or not message_id:
                 message_id = None
                 raise WhatsAppError(
@@ -214,6 +227,9 @@ def _process_queue(settings, client, limit, table):
             else:
                 status = "failed"
             error = f"WhatsApp confirmation failed: HTTP {exc.http_status}, API code {exc.api_code}."
+        except ServiceError as exc:
+            status = "pending" if exc.status >= 500 and attempts < MAX_ATTEMPTS else "failed"
+            error = f"Progress verification failed: HTTP {exc.status}."
         except ValueError:
             status, error = "failed", "Invalid confirmation recipient or text."
         except Exception:
