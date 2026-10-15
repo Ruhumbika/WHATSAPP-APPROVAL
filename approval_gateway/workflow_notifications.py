@@ -121,6 +121,8 @@ def sync_watch(settings, watch):
             return
         from .reviewer_sync import reconcile
         reconcile(conn, watch, data, settings.workflow_notifications_enabled)
+        from .recovery import schedule_expired
+        schedule_expired(conn, watch, data)
         conn.execute("UPDATE workflow_notifications SET status='cancelled',last_error='Stage changed' WHERE watch_id=? AND kind='reminder' AND status='pending' AND state_key!=?", (watch['id'], stage or ''))
         since = current['stage_since'] if current['stage_key'] == stage else now
         kind = 'completed' if data['completed'] else 'progress'

@@ -101,6 +101,16 @@ def handle(settings, response):
         state = session(settings, response['phone'])
         if state and state['ui'] == 'find':
             command = ui('main') if upper == 'CANCEL' else ui('find', invalid=True)
+        elif state and state['ui'] == 'admin_retry_prompt':
+            command = ui('admin_retry_preview', task_id=int(text)) if text.isdigit() and 0 < len(text) <= 10 else ui('admin')
+        elif state and state['ui'] == 'admin_trace_prompt':
+            match = re.fullmatch(r'([a-zA-Z0-9_-]{1,40})\s+(REQ|PA)\s+([1-9][0-9]{0,9})', text, re.I)
+            if upper == 'CANCEL':
+                command = ui('admin')
+            elif match:
+                command = ui('admin_trace', system=match[1], request_type='requisition_approval' if match[2].upper()=='REQ' else 'payment_advice_approval', reference=match[3])
+            else:
+                command = ui('admin_trace_prompt')
         elif state and state['ui'] == 'admin_time':
             if upper == 'CANCEL':
                 command = ui('admin_quiet')
@@ -259,7 +269,7 @@ def prepare(settings, job, command):
         return page('Main menu pauses without deleting your rejection draft. Choose Resume rejection to continue here. Sending a reason saves a draft; only Submit rejection sends it. Cancel rejection keeps the request pending. Drafts expire with the rejection session or task. When enabled, Open rejection form lets you choose an action and enter a reason together. Review rejection returns a draft to chat; Submit rejection is still required. If the form cannot open, use Continue rejection.',
                     ('Resume rejection', ui('rejections')), ('User guide', ui('guide')), back)
     if name == 'admin_help':
-        return page('Admin controls are available from Main menu or the ADMIN shortcut. Change reminders and quiet hours (ADMIN > Reminder settings > Quiet hours), welcome/support text, view queues, delivery receipts and recent changes. Settings apply across gateway companies and require confirmation. Admin access does not grant approval permissions.',
+        return page('Admin controls are available from Main menu or the ADMIN shortcut. Change reminders and quiet hours (ADMIN > Reminder settings > Quiet hours), welcome/support text, view queues, delivery receipts, message history and recent changes. Trace and resolve accepts system plus REQ/PA ID; reconciliation requires confirmation, never approves a record, and verifies ERP assignments before renewing expired actions. Settings apply across gateway companies and require confirmation. Admin access does not grant approval permissions.',
                     ('Admin controls', ui('admin')), ('User guide', ui('guide')), back)
     if name in GUIDE:
         title, body = GUIDE[name]
@@ -359,7 +369,7 @@ def prepare(settings, job, command):
         set_session(settings, phone, None)
         return page('*GATEWAY ADMIN*\nScope: all gateway companies\nChoose a control.',
                     ('Reminder settings', ui('admin_reminders')), ('Queue status', ui('admin_status')), ('Delivery monitor', ui('admin_delivery')),
-                    ('Help content', ui('admin_content')), ('Recent changes', ui('admin_audit')), back)
+                    ('Trace and resolve', ui('admin_trace_prompt')), ('Message history', ui('admin_history')), ('Help content', ui('admin_content')), ('Recent changes', ui('admin_audit')), back)
     if name == 'admin_reminders':
         state = 'Paused' if values['reminders_paused'] else ('Off (limit 0)' if not values['reminder_limit'] else 'On')
         body = f"*REMINDER SETTINGS*\nScope: all gateway companies\nReminders: {state}\nInterval: {values['reminder_hours']} hours\nMaximum: {values['reminder_limit']} per stage\nAutomatic notifications: {'On' if settings.workflow_notifications_enabled else 'Off in environment'}"
@@ -395,6 +405,61 @@ def prepare(settings, job, command):
     if name == 'admin_apply':
         result = controls.apply(settings, phone, job['inbound_id'], command['key'], command['value'], command['revision'])
         return page(result, admin_back, back)
+    if name == 'admin_trace_prompt':
+        set_session(settings, phone, ui('admin_trace_prompt'))
+        return page('Send system and request, for example: peta REQ 301 or peta PA 108. Trace is read-only. Type CANCEL to exit.', admin_back)
+    if name in ('admin_trace', 'admin_reconcile_preview', 'admin_reconcile_apply'):
+        from .recovery import trace, reconcile
+        target = {key: command[key] for key in ('system', 'request_type', 'reference')}
+        if name == 'admin_reconcile_apply':
+            result = reconcile(settings, phone, 'confirm:' + command['operation_id'], **target)
+            return page(result, ('Trace result', ui('admin_trace', **target)), admin_back)
+        body = trace(settings, phone, **target)
+        if name == 'admin_reconcile_preview':
+            return page(body + '\n\nConfirm reconciliation? The worker will verify current ERP assignments, retire obsolete pending tasks and renew expired actions. No approval/rejection is applied. Unknown deliveries are not resent.',
+                        ('Confirm reconcile', ui('admin_reconcile_apply', operation_id=job['token'], **target)), ('Cancel', ui('admin_trace', **target)))
+        return page(body, ('Reconcile request', ui('admin_reconcile_preview', **target)), ('Retry delivery', ui('admin_retry_prompt')), admin_back)
+    if name == 'admin_retry_prompt':
+        set_session(settings, phone, ui('admin_retry_prompt'))
+        return page('Send the numeric task ID from Trace request. Only confirmed Meta HTTP 4xx failures with a current unexpired assignment can be retried. Unknown deliveries cannot be retried here.', admin_back)
+    if name == 'admin_retry_preview':
+        with connection(settings) as conn:
+            row = conn.execute('SELECT source_system,source_reference_id,actor_phone,delivery_status FROM approval_requests WHERE id=?', (command['task_id'],)).fetchone()
+        if row is None:
+            return page('Task not found.', admin_back)
+        return page(f"Retry task {command['task_id']}?\n{row['source_system']} {row['source_reference_id']}\nRecipient: {row['actor_phone']}\nDelivery: {row['delivery_status']}\nCurrent workflow will be verified before retry.",
+            ('Confirm retry', ui('admin_retry_apply', task_id=command['task_id'], operation_id=job['token'])), admin_back)
+    if name == 'admin_retry_apply':
+        from .recovery import retry_delivery
+        return page(retry_delivery(settings, phone, 'confirm:' + command['operation_id'], command['task_id']), admin_back)
+    if name == 'admin_history':
+        from .message_history import report, rows
+        offset = max(0, min(1000000, int(command.get('offset', 0))))
+        body, more = report(settings, phone, offset)
+        batch = rows(settings, phone, offset=offset, limit=6)
+        options = [(f"View message {n+1}", ui('admin_message', origin=r['origin'], row_id=r['id'], offset=offset))
+                   for n, r in enumerate(batch)]
+        if more:
+            options.append(('Next page', ui('admin_history', offset=offset+6)))
+        if offset:
+            options.append(('Previous page', ui('admin_history', offset=max(0, offset-6))))
+        options.append(('Report export help', ui('admin_report_help')))
+        return page(body, *options, admin_back)
+    if name == 'admin_message':
+        from .message_history import rows
+        batch = rows(settings, phone, origin=command['origin'], message_row_id=command['row_id'], limit=1)
+        if not batch:
+            return page('Message not found.', admin_back)
+        row = batch[0]
+        chunk = max(0, min(10, int(command.get('chunk', 0))))
+        text = row['content_json']
+        body = f"Message {row['id']} | {row['created_at']} UTC\nRecipient: {row['phone']}\nStatus: {row['status']}\nMeta ID: {row['message_id'] or 'No acknowledgement'}\nError: {row['error_code'] or 'None'}\n" + text[chunk*2200:(chunk+1)*2200]
+        options = []
+        if len(text) > (chunk+1)*2200:
+            options.append(('More content', dict(command, chunk=chunk+1)))
+        return page(body, *options, ('Back to history', ui('admin_history', offset=command.get('offset', 0))), admin_back)
+    if name == 'admin_report_help':
+        return page('CSV reports are available to the server operator using the configured admin phone. Filters: date range (UTC), recipient, source system, request and status. Ask the operator to run the message_history export command in the release README. Export contains private message content; share only with authorized staff.', admin_back)
     if name == 'admin_delivery':
         from .delivery_monitor import report
         return page(report(settings, phone), admin_back)

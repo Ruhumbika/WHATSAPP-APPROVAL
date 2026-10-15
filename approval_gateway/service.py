@@ -425,6 +425,7 @@ def _persist_task(
     system: str,
     data: dict[str, Any],
     verified_actor: WorkflowActor,
+    *, renew_expired: bool = False,
 ) -> tuple[dict[str, Any], bool]:
 
     # The caller owns the transaction so an event's candidate tasks commit together.
@@ -496,7 +497,7 @@ def _persist_task(
 
           AND workflow_version = ?
 
-        ORDER BY id
+        ORDER BY id DESC
 
         LIMIT 1
 
@@ -504,14 +505,37 @@ def _persist_task(
         (system, *natural),
     ).fetchone()
     if existing is not None or same_task is not None:
-        stored = existing if existing is not None else same_task
+        stored = same_task if renew_expired and same_task is not None else (existing if existing is not None else same_task)
         if stored["request_hash"] != fingerprint:
             raise ServiceError(
                 "Existing task has different content; "
                 "use a new workflow version.",
                 409,
             )
-        return dict(stored), False
+        can_renew = renew_expired and (
+            stored["status"] == "expired"
+            or (stored["status"] == "pending" and _expired(stored["expires_at"]))
+        )
+        if not can_renew or stored["delivery_status"] == "unknown":
+            return dict(stored), False
+        # Never revive an old button or overwrite decision/delivery evidence.
+        # The verified resolver/authorizer must still require this exact actor.
+        if conn.execute("SELECT 1 FROM callback_attempts WHERE approval_request_id=?",
+                        (stored["id"],)).fetchone():
+            raise ServiceError("A decision callback exists for this task.", 409)
+        _validate_workflow_binding(verified_actor,
+            conn.execute("SELECT * FROM actor_bindings WHERE id=?",
+                         (stored["actor_binding_id"],)).fetchone(),
+            verified_actor.phone_number)
+        conn.execute("""UPDATE approval_requests SET status='expired',rejection_phase='closed',
+            rejection_review_token=NULL,rejection_paused=1,updated_at=? WHERE id=?""",
+                     (utc_now(), stored["id"]))
+        conn.execute("UPDATE decision_repeat_notifications SET status='expired' WHERE approval_request_id=? AND status='pending'",
+                     (stored["id"],))
+        idem = hashlib.sha256(
+            ("renew:" + str(stored["id"]) + ":" + stored["idempotency_key"]).encode()
+        ).hexdigest()
+        audit(conn, stored["id"], "renewal_verified", {"new_idempotency_key": idem})
     binding, approver = _provision_verified_actor(
         conn,
         system,
@@ -709,7 +733,7 @@ def process_workflow_event(
             # Persist all current assignments before reconciling previous tasks.
         created = 0
         for data, actor in prepared:
-            _, is_new = _persist_task(conn, settings, system, data, actor)
+            _, is_new = _persist_task(conn, settings, system, data, actor, renew_expired=True)
             created += int(is_new)
 
         current_scopes = {

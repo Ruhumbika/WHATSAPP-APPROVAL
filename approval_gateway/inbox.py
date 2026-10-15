@@ -347,11 +347,19 @@ def prepare(settings, job):
             ORDER BY id DESC LIMIT 1''', (binding['company'], TYPES[command['kind']], command['reference'],
                 binding['directory_uuid'], actor.step_id, job['phone'], utc_now())).fetchone()
     from .service import _workflow_evidence
+    if task is not None:
+        task = dict(task)
+    if task is None and not command.get('read_only'):
+        from .recovery import renew_for_actor
+        task = renew_for_actor(settings, 'peta', TYPES[command['kind']],
+                               command['reference'], binding, actor)
     if task is None or json.loads(task['payload_json']).get('_gateway_workflow') != _workflow_evidence(actor):
         return body + '\n\nNo current WhatsApp action is available. Review this request in PETA.', None, None
     from .workflow_notifications import upload_document
     content = guard.peta.get_document(int(command['reference']))
     document = upload_document(settings, content, f"{command['kind']}-{command['reference']}.pdf")
+    if task.get('_recovery_delivery'):
+        document['_recovery_delivery'] = task['id']
     # Recheck live identity, assignment and snapshot after the PDF network call.
     identity(settings, job['phone'], command, binding['id'])
     checked = guard.authorize({'request_type': TYPES[command['kind']], 'reference_id': command['reference'],
@@ -385,6 +393,7 @@ def process_inbox(settings, client, limit):
             conn.execute("UPDATE inbox_replies SET status='sending',attempts=? WHERE id=? AND status='pending'", (attempts, job['id']))
         status, message_id, error, task_id = 'sent', None, None, None
         dispatching = False
+        recovered_delivery = None
         if attempts == 1:
             try:
                 client.send_typing(job['inbound_id'])
@@ -401,6 +410,16 @@ def process_inbox(settings, client, limit):
             elif job['expires_at'] <= utc_now():
                 status = 'expired'
             else:
+                if document and document.get('_recovery_delivery'):
+                    recovered_delivery = document['_recovery_delivery']
+                    with connection(settings) as conn:
+                        claim = conn.execute("""UPDATE approval_requests SET delivery_status='sending',
+                            delivery_attempts=delivery_attempts+1,updated_at=? WHERE id=?
+                            AND delivery_status='pending' AND status='pending' AND expires_at>?""",
+                            (utc_now(), recovered_delivery, utc_now()))
+                        if claim.rowcount != 1:
+                            raise WorkflowDenied('Recovery task changed. Refresh your inbox.')
+                        conn.execute('UPDATE inbox_replies SET task_id=? WHERE id=?',(task_id,job['id']))
                 dispatching = True
                 if document and 'flow_token' in document:
                     message_id = client.send_rejection_flow(job['phone'], body, document['flow_token'], document['request_label'], document['request_summary'], document['request_items'])
@@ -428,5 +447,10 @@ def process_inbox(settings, client, limit):
             error = 'Unexpected inbox failure; inspect application configuration'
             logger.exception('Inbox job %s failed; dispatching=%s', job['id'], dispatching)
         with connection(settings) as conn:
+            if recovered_delivery is not None:
+                delivery_state = status if status in ('sent','simulated','unknown','pending','failed') else 'unknown'
+                conn.execute("""UPDATE approval_requests SET delivery_status=?,whatsapp_message_id=?,
+                    delivery_error=?,delivery_next_at=?,updated_at=? WHERE id=? AND delivery_status='sending'""",
+                    (delivery_state,message_id,error,utc_now(),utc_now(),recovered_delivery))
             conn.execute('''UPDATE inbox_replies SET status=?,message_id=?,last_error=?,task_id=?,next_attempt_at=? WHERE id=?''',
                 (status, message_id, error, task_id, (datetime.now(timezone.utc)+timedelta(seconds=30*2**(attempts-1))).isoformat(), job['id']))

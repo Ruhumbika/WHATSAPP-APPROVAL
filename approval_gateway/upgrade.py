@@ -209,7 +209,7 @@ def migrate(settings: Settings) -> None:
         conn.execute("""INSERT OR IGNORE INTO workflow_watches
             (source_system,request_type,reference_id,event_id,next_check_at)
             SELECT source_system,request_type,source_reference_id,0,? FROM approval_requests
-            WHERE source_system='peta' AND status='pending'
+            WHERE source_system='peta' AND status IN ('pending','expired')
               AND request_type IN ('requisition_approval','payment_advice_approval')
               AND source_reference_id!='' AND source_reference_id NOT GLOB '*[^0-9]*'""", (utc_now(),))
         conn.execute("UPDATE workflow_watches SET next_check_at=? WHERE next_check_at>'9990'", (utc_now(),))
@@ -220,3 +220,6 @@ def migrate(settings: Settings) -> None:
         from .rejection_flow import init_schema as init_flow_schema
         init_flow_schema(conn)
         _backfill_delivery_state(conn)
+
+    from .workflow_events import init_workflow_events
+    init_workflow_events(settings)

@@ -452,7 +452,22 @@ class WhatsAppClient:
 
         return message_id
 
-    def _post_graph(
+    def _post_graph(self, payload, *, timeout=HTTP_TIMEOUT_SECONDS):
+        if not payload.get('to') or not payload.get('type'):
+            return self._post_graph_transport(payload, timeout=timeout)
+        from .message_history import begin, finish
+        row_id = begin(self.settings, payload)
+        try:
+            result = self._post_graph_transport(payload, timeout=timeout)
+            message_id = self._message_id(result)
+        except WhatsAppError as exc:
+            finish(self.settings, row_id, 'unknown' if exc.delivery_unknown else 'failed',
+                   error_code=exc.api_code)
+            raise
+        finish(self.settings, row_id, 'accepted', message_id=message_id)
+        return result
+
+    def _post_graph_transport(
         self,
         payload: dict[str, Any],
         *, timeout: float = HTTP_TIMEOUT_SECONDS,

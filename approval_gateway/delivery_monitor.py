@@ -5,6 +5,8 @@ from .admin_controls import require_admin
 
 
 def init_schema(conn):
+    from .message_history import init_schema as init_history
+    init_history(conn)
     conn.execute("""CREATE TABLE IF NOT EXISTS delivery_receipts (
         message_id TEXT NOT NULL, status TEXT NOT NULL, event_time INTEGER NOT NULL,
         error_code TEXT, received_at TEXT NOT NULL,

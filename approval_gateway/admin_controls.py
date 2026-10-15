@@ -92,6 +92,9 @@ def queue_status(settings, phone):
     require_admin(settings, phone)
     lines = ['*GATEWAY QUEUES*', 'Scope: all gateway companies', 'Sent means accepted by the provider.']
     with connection(settings) as conn:
+        states=conn.execute('SELECT status,COUNT(*) total FROM approval_requests GROUP BY status').fetchall()
+        lines.extend(['', 'Approval task states (historical, not a live ERP inbox)',
+                      ', '.join(f"{r['status']}: {r['total']}" for r in states) or 'No tasks'])
         for title, table, column in [('Approval delivery', 'approval_requests', 'delivery_status'),
                                       ('Workflow notifications', 'workflow_notifications', 'status'),
                                       ('Inbox and menu replies', 'inbox_replies', 'status')]:
