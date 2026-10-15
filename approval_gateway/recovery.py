@@ -54,17 +54,21 @@ def renew_for_actor(settings, system, request_type, reference, binding, actor):
 def trace(settings, phone, system, request_type, reference):
     require_admin(settings, phone)
     with connection(settings) as conn:
-        tasks = [dict(r) for r in conn.execute('''SELECT id,company,step_id,actor_user_id,status,
+        tasks = [dict(r) for r in conn.execute('''SELECT id,company,step_id,actor_user_id,actor_name,actor_phone,actor_directory_uuid,whatsapp_message_id,status,
             delivery_status,expires_at,execution_status,delivery_error FROM approval_requests
             WHERE source_system=? AND request_type=? AND source_reference_id=? ORDER BY id DESC LIMIT 8''',
             (system, request_type, reference))]
         events = [dict(r) for r in conn.execute('''SELECT status,attempts,last_error FROM workflow_events
             WHERE source_system=? AND request_type=? AND reference_id=? ORDER BY id DESC LIMIT 3''',
             (system, request_type, reference))]
+    def clean(value, limit=100):
+        return ' '.join(str(value or 'Not recorded').split())[:limit]
     lines = [f'*REQUEST TRACE*\nSystem: {system}\nType: {request_type}\nReference: {reference}',
              'Historical tasks (UTC expiry):']
     for t in tasks:
         lines.append(f"Task {t['id']} | C{t['company']} | step {t['step_id']} | user {t['actor_user_id']}\n"
+                     f"Name (stored): {clean(t['actor_name'])}\n"
+                     f"Task phone: {clean(t['actor_phone'], 30)} (saved at issue/contact refresh; not a live Directory check)\n"
                      f"{t['status']} | delivery {t['delivery_status']} | execution {t['execution_status']}\nExpires {t['expires_at']}")
         if t['delivery_error']: lines.append(str(t['delivery_error'])[:180])
     if not tasks: lines.append('No stored tasks.')
@@ -88,10 +92,19 @@ def trace(settings, phone, system, request_type, reference):
             data, actor = _prepare_task(system, c)
             if data['request_type'] != request_type or data['reference_id'] != reference:
                 raise WorkflowDenied('Resolver returned a different record.')
-            current.append(f"C{data['company']} step {actor.step_id} user {actor.source_user_id}")
-        lines.append('ERP verified current assignments: ' + (', '.join(current) or 'None.'))
+            saved = next((t for t in tasks if t['company']==data['company']
+                          and t['actor_directory_uuid']==actor.directory_uuid), None)
+            if len(current) < 8:
+                current.append(f"C{data['company']} | step {actor.step_id} | user {actor.source_user_id}\n"
+                               f"Name (stored): {clean(saved['actor_name']) if saved else 'Not recorded'}\n"
+                               f"Current WhatsApp (Directory verified now): {clean(actor.phone_number,30)}")
+        verified = 'ERP verified current assignments:\n' + ('\n\n'.join(current) or 'None.')
+        if len(candidates)>8:
+            verified += f"\nShowing first 8 of {len(candidates)} assignments."
+        # Current contacts have priority over old task/error rows in the bounded WhatsApp message.
+        lines.insert(1, verified)
     except (WorkflowDenied, IntegrationUnavailable, AttributeError, ServiceError):
-        lines.append('ERP verification unavailable or denied. Historical state is not proof of current assignment.')
+        lines.insert(1, 'ERP/Directory verification unavailable or denied. Current phone not verified. Saved task phones below are historical; they do not prove a current assignment.')
     return '\n'.join(lines)[:3700]
 
 
