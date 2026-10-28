@@ -136,10 +136,12 @@ def _recover_interrupted_work(settings: Settings) -> None:
 
 
 def _claim_delivery(settings: Settings) -> dict[str, Any] | None:
+    from .reminder_policy import resume_deliveries
     with connection(settings) as conn:
         conn.execute("BEGIN IMMEDIATE")
         now = utc_now()
 
+        resume_deliveries(conn, now)
         # Expire queued tasks before selecting work.
         expired = conn.execute(
             """
@@ -280,6 +282,9 @@ def _send_delivery(
     client: WhatsAppClient,
     claimed: dict[str, Any],
 ) -> None:
+    from .reminder_policy import defer_delivery
+    if defer_delivery(settings, claimed):
+        return
     try:
         request = _prepare_delivery(settings, claimed["id"])
         if request["delivery_attempts"] > MAX_ATTEMPTS:
@@ -338,6 +343,9 @@ def _send_delivery(
             "blocked",
             error="Task or template data failed delivery preparation.",
         )
+        return
+    # Admin may have paused while ERP/Directory/document calls were in flight.
+    if defer_delivery(settings, request):
         return
     try:
         message_id = client.send_approval_request(

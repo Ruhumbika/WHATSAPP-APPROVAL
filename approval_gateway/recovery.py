@@ -42,7 +42,7 @@ def renew_for_actor(settings, system, request_type, reference, binding, actor):
              actor.step_id, actor.record_digest)).fetchone()
         if prior is None:
             return None
-        task, created = _persist_task(conn, settings, system, data, verified, renew_expired=True)
+        task, created = _persist_task(conn, settings, system, data, verified, renew_expired=True, renewal_origin="user")
         if created:
             audit(conn, task['id'], 'renewed_from', {'previous_task_id': prior['id'], 'trigger': 'inbox'})
         if task['status'] == 'pending':
@@ -130,6 +130,9 @@ def reconcile(settings, phone, inbound_id, system, request_type, reference):
 
 def schedule_expired(conn, watch, data):
     """A current ERP watch may request one durable resolution per expired generation."""
+    from .reminder_policy import paused
+    if paused(conn):
+        return
     current = data['progress'].get('current_step')
     if not current:
         return

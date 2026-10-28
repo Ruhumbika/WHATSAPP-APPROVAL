@@ -425,7 +425,7 @@ def _persist_task(
     system: str,
     data: dict[str, Any],
     verified_actor: WorkflowActor,
-    *, renew_expired: bool = False,
+    *, renew_expired: bool = False, renewal_origin: str = "automatic",
 ) -> tuple[dict[str, Any], bool]:
 
     # The caller owns the transaction so an event's candidate tasks commit together.
@@ -504,6 +504,7 @@ def _persist_task(
         """,
         (system, *natural),
     ).fetchone()
+    renewal_parent = None
     if existing is not None or same_task is not None:
         stored = same_task if renew_expired and same_task is not None else (existing if existing is not None else same_task)
         if stored["request_hash"] != fingerprint:
@@ -518,6 +519,7 @@ def _persist_task(
         )
         if not can_renew or stored["delivery_status"] == "unknown":
             return dict(stored), False
+        renewal_parent = stored["id"]
         # Never revive an old button or overwrite decision/delivery evidence.
         # The verified resolver/authorizer must still require this exact actor.
         if conn.execute("SELECT 1 FROM callback_attempts WHERE approval_request_id=?",
@@ -604,6 +606,8 @@ def _persist_task(
             "step_id": data["step_id"],
             "workflow_version": data["workflow_version"],
             "actor_binding_id": binding["id"],
+            "renewal_origin": renewal_origin if renewal_parent is not None else None,
+            "renewal_parent": renewal_parent,
         },
     )
     return (
@@ -731,9 +735,15 @@ def process_workflow_event(
         ).fetchone():
             raise ServiceError("Source system disabled.", 403)
             # Persist all current assignments before reconciling previous tasks.
+        # Only an audited admin reconciliation is an explicit operator request.
+        explicit_admin = conn.execute("""SELECT 1 FROM gateway_admin_audit
+            WHERE setting_key='reconcile_request' AND json_extract(new_json,'$.event_id')=?
+              AND json_extract(new_json,'$.source_system')=? LIMIT 1""",
+            (event['event_id'], system)).fetchone()
         created = 0
         for data, actor in prepared:
-            _, is_new = _persist_task(conn, settings, system, data, actor, renew_expired=True)
+            _, is_new = _persist_task(conn, settings, system, data, actor, renew_expired=True,
+                                     renewal_origin="admin" if explicit_admin else "automatic")
             created += int(is_new)
 
         current_scopes = {

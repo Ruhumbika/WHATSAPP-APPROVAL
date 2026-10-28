@@ -312,6 +312,10 @@ def send_job(settings, client, job):
     dispatching = False
     try:
         phone, name, values, document = prepare_send(settings, job, watch)
+        if job['kind'] == 'reminder':
+            from .admin_controls import effective
+            if not effective(settings).workflow_reminder_limit:
+                raise WorkflowDenied('Reminders are paused or disabled')
         dispatching = True
         if name == 'text':
             message_id = client.send_text(phone, values)
