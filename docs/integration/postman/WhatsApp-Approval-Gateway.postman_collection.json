@@ -1,0 +1,165 @@
+{
+  "info": {
+    "name": "WhatsApp Approval Gateway | ERP Developer Kit v1",
+    "description": "API intake requests. Configure variables before use. Workflow event acceptance != approval execution. Never commit live credentials.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8088"
+    },
+    {
+      "key": "apiKey",
+      "value": "REPLACE_ME"
+    },
+    {
+      "key": "sourceSystem",
+      "value": "ghrm"
+    },
+    {
+      "key": "company",
+      "value": "14"
+    },
+    {
+      "key": "actorDirectoryUuid",
+      "value": "550e8400-e29b-41d4-a716-446655440000"
+    },
+    {
+      "key": "gatewayReferenceId",
+      "value": "AGR-REPLACE_ME"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{apiKey}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "auth": {
+          "type": "noauth"
+        },
+        "url": "{{baseUrl}}/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('health response is 200', () => pm.response.to.have.status(200));",
+              "pm.test('status is ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Workflow event — asynchronous",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"event_id\": \"550e8400-e29b-41d4-a716-446655440001\",\n  \"source_system\": \"{{sourceSystem}}\",\n  \"request_type\": \"leave_approval\",\n  \"reference_id\": \"LEAVE-2026-001\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/api/workflow-events",
+        "description": "Reuse the same event_id ONLY for identical repeated submissions. Generate a fresh UUID for a new event."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('accepted or idempotent replay', () => pm.expect([200,202]).to.include(pm.response.code));",
+              "pm.test('event accepted', () => pm.expect(pm.response.json().accepted).to.eql(true));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create explicit approval task",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source_system\": \"{{sourceSystem}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"leave_approval\",\n  \"reference_id\": \"LEAVE-2026-001\",\n  \"step_id\": \"manager\",\n  \"workflow_version\": \"1\",\n  \"actor_directory_uuid\": \"{{actorDirectoryUuid}}\",\n  \"message\": \"Leave request requires approval\",\n  \"idempotency_key\": \"ghrm-LEAVE-2026-001-manager-v1\",\n  \"payload\": {\n    \"employee_id\": 123,\n    \"days\": 5\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/api/approval-requests",
+        "description": "Requires active registered ERP workflow guard and actor verification. Successful response contains an approval_request object, not proof of WhatsApp delivery."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('created or idempotent replay', () => pm.expect([200,201]).to.include(pm.response.code));",
+              "pm.test('approval response shape', () => { const v=pm.response.json(); pm.expect(v).to.have.property('approval_request'); pm.expect(v).to.have.property('created'); });",
+              "const v=pm.response.json().approval_request; if (v && v.gateway_reference_id) pm.collectionVariables.set('gatewayReferenceId',v.gateway_reference_id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Read approval task",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('read succeeds', () => pm.response.to.have.status(200));",
+              "pm.test('response contains approval_request', () => pm.expect(pm.response.json()).to.have.property('approval_request'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cancel approval task (mutating; run deliberately)",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}/cancel",
+        "description": "Mutates task state. Does not reverse ERP business execution."
+      }
+    }
+  ]
+}
