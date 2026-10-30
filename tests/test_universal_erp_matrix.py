@@ -198,6 +198,9 @@ class UniversalERPMatrixTests(unittest.TestCase):
                 status, detail = self.request("GET", "/api/approval-requests/" + ref, system)
                 self.assertEqual(status, 200, detail)
                 self.assertEqual(detail["approval_request"]["source_system"], system)
+                other_system = next(x[0] for x in SYSTEMS if x[0] != system)
+                denied_status, _ = self.request("GET", "/api/approval-requests/" + ref, other_system)
+                self.assertIn(denied_status, (403, 404))
                 decision = decide(self.settings, {
                     "action": "approved", "reference": ref, "context_id": None,
                     "phone": self.backends[system]["phone"],
