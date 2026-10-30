@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "ERP WhatsApp Approval Gateway — Universal Postman Integration Kit v1.1",
-    "description": "PRIMARY developer integration deliverable. Configure collection variables locally. Every ERP uses identical top-level JSON approval fields; unique business metadata goes in payload. API key identifies the ERP, while the separately configured ERP verification endpoint establishes current approver authorization. An accepted request does NOT mean sent, approved, or applied. Do not run destructive requests against production. IMPORTANT: Import and select one of the supplied Postman Environments (Local Sandbox or Production Template). All collection variables have corresponding environment variables; the active environment takes precedence. gatewayReferenceId is written back to the selected environment after a successful creation.",
+    "name": "ERP WhatsApp Approval Gateway — Complete Developer Postman Kit v1.2",
+    "description": "PRIMARY developer integration deliverable. Configure collection variables locally. Every ERP uses identical top-level JSON approval fields; unique business metadata goes in payload. API key identifies the ERP, while the separately configured ERP verification endpoint establishes current approver authorization. An accepted request does NOT mean sent, approved, or applied. Do not run destructive requests against production. IMPORTANT: Import and select one of the supplied Postman Environments (Local Sandbox or Production Template). All collection variables have corresponding environment variables; the active environment takes precedence. gatewayReferenceId is written back to the selected environment after a successful creation. Collection includes gateway HTTP endpoints plus ERP-owned verification/callback contract examples. ERP-owned example endpoints cannot be called on gateway baseUrl.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -64,6 +64,31 @@
       "key": "workflowEventId",
       "value": "550e8400-e29b-41d4-a716-446655440001",
       "type": "string"
+    },
+    {
+      "key": "erpVerifyUrl",
+      "value": "https://erp.example/api/approvals/verify",
+      "type": "string"
+    },
+    {
+      "key": "erpVerifyToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "erpCallbackUrl",
+      "value": "https://erp.example/api/approvals/callback",
+      "type": "string"
+    },
+    {
+      "key": "callbackTimestamp",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "callbackSignature",
+      "value": "",
+      "type": "string"
     }
   ],
   "auth": {
@@ -89,7 +114,7 @@
               "type": "noauth"
             },
             "url": "{{baseUrl}}/health",
-            "description": "Checks server process only. Does not verify ERP adapter, Meta delivery or callback."
+            "description": "Checks server process only. Does not verify ERP adapter, Meta delivery or callback. Inbound HTTP GET has NO request body and NO Authorization needed."
           },
           "event": [
             {
@@ -124,7 +149,7 @@
               }
             },
             "url": "{{baseUrl}}/api/approval-requests",
-            "description": "MAIN integration request. Same payload works for any ERP after its API client, verification URL and signed callback are configured by gateway operator. Replaying unchanged payload returns 200, new returns 201. If changed workflow data, update workflowVersion and idempotencyKey. Do not put actor phone or permissions into payload."
+            "description": "MAIN integration request. Same payload works for any ERP after its API client, verification URL and signed callback are configured by gateway operator. Replaying unchanged payload returns 200, new returns 201. If changed workflow data, update workflowVersion and idempotencyKey. Do not put actor phone or permissions into payload. Gateway API headers: Authorization: Bearer {{apiKey}}; Content-Type: application/json. New task -> HTTP 201; identical replay -> HTTP 200. Error response {\"error\":\"...\"}."
           },
           "event": [
             {
@@ -148,7 +173,7 @@
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}",
-            "description": "Uses reference saved automatically by Create request. Distinguish status (user decision) from execution_status (ERP callback applied)."
+            "description": "Uses reference saved automatically by Create request. Distinguish status (user decision) from execution_status (ERP callback applied). Gateway API headers: Authorization: Bearer {{apiKey}}. GET has NO JSON request body."
           },
           "event": [
             {
@@ -191,7 +216,7 @@
               }
             },
             "url": "{{baseUrl}}/api/workflow-events",
-            "description": "OPTIONAL advanced mode: Do not use for generic ERP integration because generic adapter has no event resolver. 202 means event persisted, NOT task delivered. Generate a new UUID for each distinct event; retry only the identical event."
+            "description": "OPTIONAL advanced mode: Do not use for generic ERP integration because generic adapter has no event resolver. 202 means event persisted, NOT task delivered. Generate a new UUID for each distinct event; retry only the identical event. Gateway API headers: Authorization: Bearer {{apiKey}}; Content-Type: application/json."
           },
           "event": [
             {
@@ -325,6 +350,75 @@
               }
             }
           ]
+        },
+        {
+          "name": "Missing required actor UUID → 400 (sandbox only)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/approval-requests",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"{{sourceSystem}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"reference_id\": \"{{referenceId}}\",\n  \"step_id\": \"{{stepId}}\",\n  \"workflow_version\": \"{{workflowVersion}}\",\n  \"message\": \"Approval request for {{referenceId}} requires review\",\n  \"idempotency_key\": \"{{idempotencyKey}}\",\n  \"payload\": {\n    \"employee_id\": 123,\n    \"leave_days\": 5,\n    \"document_url\": \"https://erp.example/leave/LEAVE-2026-001\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Fail-closed request validation. Expected 400 before any ERP verification or task creation."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing actor UUID rejected',()=>pm.response.to.have.status(400));",
+                  "pm.test('error body',()=>pm.expect(pm.response.json().error).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed business payload → 400 (sandbox only)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/approval-requests",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"{{sourceSystem}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"reference_id\": \"{{referenceId}}\",\n  \"step_id\": \"{{stepId}}\",\n  \"workflow_version\": \"{{workflowVersion}}\",\n  \"actor_directory_uuid\": \"{{actorDirectoryUuid}}\",\n  \"message\": \"Approval request for {{referenceId}} requires review\",\n  \"idempotency_key\": \"{{idempotencyKey}}\",\n  \"payload\": [\n    \"not\",\n    \"an\",\n    \"object\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Fail-closed payload validation; payload must be a JSON object."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Malformed payload rejected',()=>pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -337,7 +431,7 @@
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}/cancel",
-            "description": "Run only for a disposable/sandbox task. Cancels gateway task; will NOT reverse action already executed in ERP."
+            "description": "Run only for a disposable/sandbox task. Cancels gateway task; will NOT reverse action already executed in ERP. Gateway API headers: Authorization: Bearer {{apiKey}}. POST has NO JSON request body. Manually invoke only for a sandbox request."
           },
           "event": [
             {
@@ -346,6 +440,110 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "E — ERP Developer Endpoints (ERP-owned, EXAMPLES ONLY)",
+      "description": "These are endpoints that each ERP must implement on its backend. They are not hosted by the WhatsApp Gateway. Do not run callbacks manually in production.",
+      "item": [
+        {
+          "name": "06 — ERP verify current approver (ERP-owned endpoint)",
+          "request": {
+            "method": "POST",
+            "url": "{{erpVerifyUrl}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"company\": \"{{company}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"reference_id\": \"{{referenceId}}\",\n  \"step_id\": \"{{stepId}}\",\n  \"actor_directory_uuid\": \"{{actorDirectoryUuid}}\",\n  \"workflow_version\": \"{{workflowVersion}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "SENT BY GATEWAY to ERP, not a Gateway route. ERP developer implements this URL. A success reply must match all verified data exactly: {\"authorized\":true,\"company\":\"{{company}}\",\"request_type\":\"{{requestType}}\",\"reference_id\":\"{{referenceId}}\",\"step_id\":\"{{stepId}}\",\"actor_directory_uuid\":\"{{actorDirectoryUuid}}\",\"source_user_id\":\"152\",\"phone_number\":\"+255712345678\",\"module_id\":\"leave\",\"record_digest\":\"{{workflowVersion}}\"}. This request is a developer contract example; do not run unless ERP verification server is configured.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{erpVerifyToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ERP responds HTTP 200', () => pm.response.to.have.status(200));",
+                  "const a=pm.response.json();",
+                  "pm.test('ERP verified current actor',()=>{pm.expect(a.authorized).to.eql(true);pm.expect(a.actor_directory_uuid).to.eql(pm.environment.get('actorDirectoryUuid'));pm.expect(a.step_id).to.eql(pm.environment.get('stepId'));pm.expect(a.record_digest).to.eql(pm.environment.get('workflowVersion'));});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "07 — ERP receives signed decision (CONTRACT EXAMPLE ONLY)",
+          "request": {
+            "method": "POST",
+            "url": "{{erpCallbackUrl}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Approval-Gateway-Timestamp",
+                "value": "{{callbackTimestamp}}"
+              },
+              {
+                "key": "X-Approval-Gateway-Signature",
+                "value": "{{callbackSignature}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "decision:{{gatewayReferenceId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"decision:{{gatewayReferenceId}}\",\n  \"gateway_reference_id\": \"{{gatewayReferenceId}}\",\n  \"reference_id\": \"{{referenceId}}\",\n  \"source_system\": \"{{sourceSystem}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"step_id\": \"{{stepId}}\",\n  \"workflow_version\": \"{{workflowVersion}}\",\n  \"status\": \"approved\",\n  \"responded_at\": \"2026-10-30T14:00:00+00:00\",\n  \"channel\": \"whatsapp\",\n  \"actor\": {\n    \"directory_uuid\": \"{{actorDirectoryUuid}}\",\n    \"user_id\": \"152\",\n    \"name\": \"Example Approver\",\n    \"phone\": \"+255712345678\"\n  },\n  \"evidence\": {\n    \"message_id\": \"sample-inbound-id\",\n    \"original_reply\": \"Approve\",\n    \"context_id\": null\n  },\n  \"payload\": {\n    \"employee_id\": 123,\n    \"leave_days\": 5\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "INBOUND ERP callback, not a Gateway route. Normally the Gateway worker sends this automatically after the WhatsApp decision. This manual example is UNSIGNED until you compute a fresh HMAC-SHA256 signature over exact raw JSON bytes: timestamp + '.' + raw_body, using the separately registered callback secret. Do not send it to production without a valid signature. Correct ERP response HTTP 200 JSON {\"event_id\":\"decision:AGR-...\",\"execution_status\":\"applied\"} after transactional commit, or rejected on business denial. Replays must be idempotent."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ERP callback acknowledgement HTTP 200',()=>pm.response.to.have.status(200));",
+                  "const a=pm.response.json();",
+                  "pm.test('ERP acknowledges exact event',()=>{pm.expect(a.event_id).to.eql('decision:'+pm.environment.get('gatewayReferenceId'));pm.expect(['applied','rejected']).to.include(a.execution_status);});"
                 ]
               }
             }
