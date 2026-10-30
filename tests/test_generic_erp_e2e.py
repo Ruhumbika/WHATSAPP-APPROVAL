@@ -16,7 +16,7 @@ from pathlib import Path
 
 from approval_gateway.callbacks import verify_callback
 from approval_gateway.config import Settings
-from approval_gateway.db import connection, init_db
+from approval_gateway.db import connection, init_db, utc_now
 from approval_gateway.integrations.generic import GenericWorkflowGuard
 from approval_gateway.integrations.registry import configure_workflow_guards
 from approval_gateway.repository import create_api_client
@@ -49,6 +49,7 @@ class GenericERPHTTPIntegrationTest(unittest.TestCase):
         self.authorized = True
         self.step = "manager"
         self.seen_callbacks = []
+        self.callback_failures_remaining = 0
         parent = self
 
         class ERPHandler(BaseHTTPRequestHandler):
@@ -86,6 +87,12 @@ class GenericERPHTTPIntegrationTest(unittest.TestCase):
                         self.end_headers()
                         return
                     parent.seen_callbacks.append(payload)
+                    if parent.callback_failures_remaining:
+                        parent.callback_failures_remaining -= 1
+                        self.send_response(503)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
                     response = {"event_id": payload["event_id"],
                                 "execution_status": "applied"}
                 else:
@@ -189,6 +196,73 @@ class GenericERPHTTPIntegrationTest(unittest.TestCase):
         self.assertEqual(row["execution_status"], "applied")
         self.assertEqual(len(self.seen_callbacks), 1)
         self.assertEqual(self.seen_callbacks[0]["gateway_reference_id"], ref)
+
+    def _decision(self, reference, message_id="wa-inbound-1"):
+        from approval_gateway.service import decide
+        return decide(self.settings, {
+            "action": "approved", "reference": reference, "context_id": None,
+            "phone": PHONE, "message_id": message_id, "text": "Approve"})
+
+    def _execution(self, reference):
+        with connection(self.settings) as conn:
+            return dict(conn.execute(
+                "SELECT status, execution_status FROM approval_requests "
+                "WHERE gateway_reference_id=?", (reference,)).fetchone())
+
+    def test_revoked_approver_cannot_decide(self):
+        code, created = self.post(self.body)
+        self.assertEqual(code, 201)
+        ref = created["approval_request"]["gateway_reference_id"]
+        self.authorized = False
+        from approval_gateway.service import ServiceError
+        with self.assertRaises(ServiceError) as caught:
+            self._decision(ref)
+        self.assertEqual(caught.exception.status, 403)
+        self.assertEqual(self._execution(ref)["status"], "pending")
+        with connection(self.settings) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM callback_attempts").fetchone()[0], 0)
+        self.assertEqual(self.seen_callbacks, [])
+
+    def test_duplicate_interactive_decision_is_not_applied_twice(self):
+        code, created = self.post(self.body)
+        self.assertEqual(code, 201)
+        ref = created["approval_request"]["gateway_reference_id"]
+        first = self._decision(ref)
+        self.assertTrue(first["processed"])
+        duplicated = self._decision(ref)
+        self.assertEqual(duplicated["reason"], "duplicate_message")
+        run_once(self.settings)
+        self.assertEqual(self._execution(ref)["execution_status"], "applied")
+        self.assertEqual(len(self.seen_callbacks), 1)
+        with connection(self.settings) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM callback_attempts").fetchone()[0], 1)
+
+    def test_callback_503_retries_with_same_event_id(self):
+        code, created = self.post(self.body)
+        self.assertEqual(code, 201)
+        ref = created["approval_request"]["gateway_reference_id"]
+        self.assertTrue(self._decision(ref)["processed"])
+        self.callback_failures_remaining = 1
+        run_once(self.settings)
+        self.assertEqual(self._execution(ref)["execution_status"], "pending")
+        self.assertEqual(len(self.seen_callbacks), 1)
+        with connection(self.settings) as conn:
+            row = conn.execute("SELECT status, attempts FROM callback_attempts").fetchone()
+            self.assertEqual(row["status"], "pending")
+            self.assertEqual(row["attempts"], 1)
+            # Advance only this isolated test database's retry clock.
+            conn.execute("UPDATE callback_attempts SET next_attempt_at=?", (utc_now(),))
+        run_once(self.settings)
+        self.assertEqual(self._execution(ref)["execution_status"], "applied")
+        self.assertEqual(len(self.seen_callbacks), 2)
+        self.assertEqual(
+            self.seen_callbacks[0]["event_id"], self.seen_callbacks[1]["event_id"])
+        with connection(self.settings) as conn:
+            row = conn.execute("SELECT status, attempts FROM callback_attempts").fetchone()
+            self.assertEqual(row["status"], "sent")
+            self.assertEqual(row["attempts"], 2)
 
 
 if __name__ == "__main__":
