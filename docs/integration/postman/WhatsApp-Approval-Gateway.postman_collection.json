@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "ERP WhatsApp Approval Gateway — Universal Postman Integration Kit v1.1",
-    "description": "PRIMARY developer integration deliverable. Configure collection variables locally. Every ERP uses identical top-level JSON approval fields; unique business metadata goes in payload. API key identifies the ERP, while the separately configured ERP verification endpoint establishes current approver authorization. An accepted request does NOT mean sent, approved, or applied. Do not run destructive requests against production.",
+    "description": "PRIMARY developer integration deliverable. Configure collection variables locally. Every ERP uses identical top-level JSON approval fields; unique business metadata goes in payload. API key identifies the ERP, while the separately configured ERP verification endpoint establishes current approver authorization. An accepted request does NOT mean sent, approved, or applied. Do not run destructive requests against production. IMPORTANT: Import and select one of the supplied Postman Environments (Local Sandbox or Production Template). All collection variables have corresponding environment variables; the active environment takes precedence. gatewayReferenceId is written back to the selected environment after a successful creation.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -137,7 +137,7 @@
                   "pm.test('response shape', () => { pm.expect(result).to.have.property('created').that.is.a('boolean'); pm.expect(result.approval_request).to.be.an('object'); });",
                   "const ref = result.approval_request && result.approval_request.gateway_reference_id;",
                   "pm.test('gateway reference ID returned', () => pm.expect(ref).to.match(/^AGR-[A-Z0-9]{1,96}$/));",
-                  "if(ref) pm.collectionVariables.set('gatewayReferenceId', ref);"
+                  "if(ref) pm.environment.set('gatewayReferenceId', ref);"
                 ]
               }
             }
@@ -159,7 +159,7 @@
                   "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
                   "const result = pm.response.json();",
                   "pm.test('task exists', () => pm.expect(result.approval_request).to.be.an('object'));",
-                  "pm.test('reference matches', () => pm.expect(result.approval_request.gateway_reference_id).to.eql(pm.collectionVariables.get('gatewayReferenceId')));"
+                  "pm.test('reference matches', () => pm.expect(result.approval_request.gateway_reference_id).to.eql(pm.environment.get('gatewayReferenceId')));"
                 ]
               }
             }
@@ -201,7 +201,7 @@
                 "exec": [
                   "pm.test('HTTP 202 new or 200 replay', () => pm.expect([200,202]).to.include(pm.response.code));",
                   "const result=pm.response.json();",
-                  "pm.test('accepted receipt', () => { pm.expect(result.accepted).to.eql(true); pm.expect(result.event_id).to.eql(pm.collectionVariables.get('workflowEventId')); });"
+                  "pm.test('accepted receipt', () => { pm.expect(result.accepted).to.eql(true); pm.expect(result.event_id).to.eql(pm.environment.get('workflowEventId')); });"
                 ]
               }
             }
