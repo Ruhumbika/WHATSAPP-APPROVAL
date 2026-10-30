@@ -127,7 +127,7 @@ class GenericWorkflowGuard:
         for key in ("source_user_id", "module_id", "record_digest"):
             _field(verified[key], key)
         phone = _field(verified["phone_number"], "phone_number", 16)
-        if not re.fullmatch(r"\\+?[1-9][0-9]{6,14}", phone):
+        if not re.fullmatch(r"\+?[1-9][0-9]{6,14}", phone):
             raise IntegrationUnavailable("ERP returned invalid phone")
         if ("workflow_version" in body
                 and verified["record_digest"] != body["workflow_version"]):
