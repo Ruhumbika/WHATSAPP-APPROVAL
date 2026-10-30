@@ -92,7 +92,7 @@ class GenericContractTests(unittest.TestCase):
     def test_http_redirects_are_never_followed(self):
         from approval_gateway.integrations.generic import _NoRedirect
         self.assertIsNone(_NoRedirect().redirect_request(
-            None, None, None, 302, "Moved", None, "https://elsewhere.example"))
+            None, None, 302, "Moved", None, "https://elsewhere.example"))
 
     def test_missing_credentials_fail_configuration(self):
         with self.assertRaises(ValueError):
