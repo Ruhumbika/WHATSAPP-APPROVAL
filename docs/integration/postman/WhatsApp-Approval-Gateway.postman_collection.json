@@ -1,33 +1,69 @@
 {
   "info": {
-    "name": "WhatsApp Approval Gateway | ERP Developer Kit v1",
-    "description": "API intake requests. Configure variables before use. Workflow event acceptance != approval execution. Never commit live credentials.",
+    "name": "ERP WhatsApp Approval Gateway — Universal Postman Integration Kit v1.1",
+    "description": "PRIMARY developer integration deliverable. Configure collection variables locally. Every ERP uses identical top-level JSON approval fields; unique business metadata goes in payload. API key identifies the ERP, while the separately configured ERP verification endpoint establishes current approver authorization. An accepted request does NOT mean sent, approved, or applied. Do not run destructive requests against production.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://127.0.0.1:8088"
+      "value": "http://127.0.0.1:8088",
+      "type": "string"
     },
     {
       "key": "apiKey",
-      "value": "REPLACE_ME"
+      "value": "REPLACE_WITH_ERP_SCOPED_KEY",
+      "type": "string"
     },
     {
       "key": "sourceSystem",
-      "value": "ghrm"
+      "value": "ghrm",
+      "type": "string"
     },
     {
       "key": "company",
-      "value": "14"
+      "value": "14",
+      "type": "string"
+    },
+    {
+      "key": "requestType",
+      "value": "leave_approval",
+      "type": "string"
+    },
+    {
+      "key": "referenceId",
+      "value": "LEAVE-2026-001",
+      "type": "string"
+    },
+    {
+      "key": "stepId",
+      "value": "manager",
+      "type": "string"
+    },
+    {
+      "key": "workflowVersion",
+      "value": "record-v1",
+      "type": "string"
     },
     {
       "key": "actorDirectoryUuid",
-      "value": "550e8400-e29b-41d4-a716-446655440000"
+      "value": "550e8400-e29b-41d4-a716-446655440000",
+      "type": "string"
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "ghrm-LEAVE-2026-001-manager-record-v1",
+      "type": "string"
     },
     {
       "key": "gatewayReferenceId",
-      "value": "AGR-REPLACE_ME"
+      "value": "AGR-REPLACE_ME",
+      "type": "string"
+    },
+    {
+      "key": "workflowEventId",
+      "value": "550e8400-e29b-41d4-a716-446655440001",
+      "type": "string"
     }
   ],
   "auth": {
@@ -42,124 +78,280 @@
   },
   "item": [
     {
-      "name": "Health",
-      "request": {
-        "method": "GET",
-        "auth": {
-          "type": "noauth"
-        },
-        "url": "{{baseUrl}}/health"
-      },
-      "event": [
+      "name": "A — Normal ERP Integration (run in order)",
+      "description": "Production-compatible read/write calls; Create request actually queues an approval if gateway is live. Start with sandbox.",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('health response is 200', () => pm.response.to.have.status(200));",
-              "pm.test('status is ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "Workflow event — asynchronous",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"event_id\": \"550e8400-e29b-41d4-a716-446655440001\",\n  \"source_system\": \"{{sourceSystem}}\",\n  \"request_type\": \"leave_approval\",\n  \"reference_id\": \"LEAVE-2026-001\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
+          "name": "01 — Health",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "noauth"
+            },
+            "url": "{{baseUrl}}/health",
+            "description": "Checks server process only. Does not verify ERP adapter, Meta delivery or callback."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('gateway process healthy', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
             }
-          }
+          ]
         },
-        "url": "{{baseUrl}}/api/workflow-events",
-        "description": "Reuse the same event_id ONLY for identical repeated submissions. Generate a fresh UUID for a new event."
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('accepted or idempotent replay', () => pm.expect([200,202]).to.include(pm.response.code));",
-              "pm.test('event accepted', () => pm.expect(pm.response.json().accepted).to.eql(true));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "Create explicit approval task",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"source_system\": \"{{sourceSystem}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"leave_approval\",\n  \"reference_id\": \"LEAVE-2026-001\",\n  \"step_id\": \"manager\",\n  \"workflow_version\": \"1\",\n  \"actor_directory_uuid\": \"{{actorDirectoryUuid}}\",\n  \"message\": \"Leave request requires approval\",\n  \"idempotency_key\": \"ghrm-LEAVE-2026-001-manager-v1\",\n  \"payload\": {\n    \"employee_id\": 123,\n    \"days\": 5\n  }\n}",
-          "options": {
-            "raw": {
-              "language": "json"
+          "name": "02 — Create approval (universal payload)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"{{sourceSystem}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"reference_id\": \"{{referenceId}}\",\n  \"step_id\": \"{{stepId}}\",\n  \"workflow_version\": \"{{workflowVersion}}\",\n  \"actor_directory_uuid\": \"{{actorDirectoryUuid}}\",\n  \"message\": \"Approval request for {{referenceId}} requires review\",\n  \"idempotency_key\": \"{{idempotencyKey}}\",\n  \"payload\": {\n    \"employee_id\": 123,\n    \"leave_days\": 5,\n    \"document_url\": \"https://erp.example/leave/LEAVE-2026-001\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "MAIN integration request. Same payload works for any ERP after its API client, verification URL and signed callback are configured by gateway operator. Replaying unchanged payload returns 200, new returns 201. If changed workflow data, update workflowVersion and idempotencyKey. Do not put actor phone or permissions into payload."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201 new or 200 idempotent', () => pm.expect([200,201]).to.include(pm.response.code));",
+                  "const result = pm.response.json();",
+                  "pm.test('response shape', () => { pm.expect(result).to.have.property('created').that.is.a('boolean'); pm.expect(result.approval_request).to.be.an('object'); });",
+                  "const ref = result.approval_request && result.approval_request.gateway_reference_id;",
+                  "pm.test('gateway reference ID returned', () => pm.expect(ref).to.match(/^AGR-[A-Z0-9]{1,96}$/));",
+                  "if(ref) pm.collectionVariables.set('gatewayReferenceId', ref);"
+                ]
+              }
             }
-          }
+          ]
         },
-        "url": "{{baseUrl}}/api/approval-requests",
-        "description": "Requires active registered ERP workflow guard and actor verification. Successful response contains an approval_request object, not proof of WhatsApp delivery."
-      },
-      "event": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('created or idempotent replay', () => pm.expect([200,201]).to.include(pm.response.code));",
-              "pm.test('approval response shape', () => { const v=pm.response.json(); pm.expect(v).to.have.property('approval_request'); pm.expect(v).to.have.property('created'); });",
-              "const v=pm.response.json().approval_request; if (v && v.gateway_reference_id) pm.collectionVariables.set('gatewayReferenceId',v.gateway_reference_id);"
-            ]
-          }
+          "name": "03 — Get approval status",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}",
+            "description": "Uses reference saved automatically by Create request. Distinguish status (user decision) from execution_status (ERP callback applied)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const result = pm.response.json();",
+                  "pm.test('task exists', () => pm.expect(result.approval_request).to.be.an('object'));",
+                  "pm.test('reference matches', () => pm.expect(result.approval_request.gateway_reference_id).to.eql(pm.collectionVariables.get('gatewayReferenceId')));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "Read approval task",
-      "request": {
-        "method": "GET",
-        "url": "{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}"
-      },
-      "event": [
+      "name": "B — Optional Workflow Event Mode",
+      "description": "Only for ERPs with a registered event resolver; not supported by generic ERP adapter.",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('read succeeds', () => pm.response.to.have.status(200));",
-              "pm.test('response contains approval_request', () => pm.expect(pm.response.json()).to.have.property('approval_request'));"
-            ]
-          }
+          "name": "04 — Workflow event (only systems with resolver)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{workflowEventId}}\",\n  \"source_system\": \"{{sourceSystem}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"reference_id\": \"{{referenceId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/workflow-events",
+            "description": "OPTIONAL advanced mode: Do not use for generic ERP integration because generic adapter has no event resolver. 202 means event persisted, NOT task delivered. Generate a new UUID for each distinct event; retry only the identical event."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202 new or 200 replay', () => pm.expect([200,202]).to.include(pm.response.code));",
+                  "const result=pm.response.json();",
+                  "pm.test('accepted receipt', () => { pm.expect(result.accepted).to.eql(true); pm.expect(result.event_id).to.eql(pm.collectionVariables.get('workflowEventId')); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "Cancel approval task (mutating; run deliberately)",
-      "request": {
-        "method": "POST",
-        "url": "{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}/cancel",
-        "description": "Mutates task state. Does not reverse ERP business execution."
-      }
+      "name": "C — Security / Negative Tests (sandbox only)",
+      "description": "Run only in sandbox; expected rejection codes.",
+      "item": [
+        {
+          "name": "Wrong API key → 401 (SAFE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"{{sourceSystem}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"reference_id\": \"{{referenceId}}\",\n  \"step_id\": \"{{stepId}}\",\n  \"workflow_version\": \"{{workflowVersion}}\",\n  \"actor_directory_uuid\": \"{{actorDirectoryUuid}}\",\n  \"message\": \"Approval request for {{referenceId}} requires review\",\n  \"idempotency_key\": \"{{idempotencyKey}}\",\n  \"payload\": {\n    \"employee_id\": 123,\n    \"leave_days\": 5,\n    \"document_url\": \"https://erp.example/leave/LEAVE-2026-001\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "Negative test. Uses intentionally invalid key and should not create an approval.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "invalid-test-api-key",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 401 invalid API key', () => pm.response.to.have.status(401));",
+                  "pm.test('error response', () => pm.expect(pm.response.json().error).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Wrong source_system → 403 (SAFE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"other-unregistered-source\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"reference_id\": \"{{referenceId}}\",\n  \"step_id\": \"{{stepId}}\",\n  \"workflow_version\": \"{{workflowVersion}}\",\n  \"actor_directory_uuid\": \"{{actorDirectoryUuid}}\",\n  \"message\": \"Approval request for {{referenceId}} requires review\",\n  \"idempotency_key\": \"{{idempotencyKey}}\",\n  \"payload\": {\n    \"employee_id\": 123,\n    \"leave_days\": 5,\n    \"document_url\": \"https://erp.example/leave/LEAVE-2026-001\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "Negative test verifies Bearer key scope; not a normal approval request."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403 source mismatch', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unregistered callback URL → 403 (SAFE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"{{sourceSystem}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"{{requestType}}\",\n  \"reference_id\": \"{{referenceId}}\",\n  \"step_id\": \"{{stepId}}\",\n  \"workflow_version\": \"{{workflowVersion}}\",\n  \"actor_directory_uuid\": \"{{actorDirectoryUuid}}\",\n  \"message\": \"Approval request for {{referenceId}} requires review\",\n  \"idempotency_key\": \"{{idempotencyKey}}\",\n  \"payload\": {\n    \"employee_id\": 123,\n    \"leave_days\": 5,\n    \"document_url\": \"https://erp.example/leave/LEAVE-2026-001\"\n  },\n  \"callback_url\": \"https://unregistered.example.invalid/approval-callback\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "Negative test: inbound callers cannot choose callback destination. The result depends on ERP verification being configured; do not run against production."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 403 callback URL restriction', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "D — Manual destructive operations",
+      "description": "Do not run this folder automatically or against real approvals.",
+      "item": [
+        {
+          "name": "05 — Cancel pending approval (DESTRUCTIVE, MANUAL ONLY)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}/cancel",
+            "description": "Run only for a disposable/sandbox task. Cancels gateway task; will NOT reverse action already executed in ERP."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
