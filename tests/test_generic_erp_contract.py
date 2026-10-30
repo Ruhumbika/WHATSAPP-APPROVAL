@@ -4,7 +4,7 @@ import json
 import unittest
 import urllib.error
 from email.message import Message
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 from approval_gateway.integrations.generic import (
     GenericWorkflowGuard, build_adapter,
@@ -38,7 +38,7 @@ VERIFIED = {
 def response(data):
     msg = Message()
     msg["Content-Type"] = "application/json"
-    obj = Mock()
+    obj = MagicMock()
     obj.status = 200
     obj.headers = msg
     obj.read.side_effect = lambda n: json.dumps(data).encode()
