@@ -43,3 +43,32 @@ python3 -m json.tool docs/integration/postman/environments/Local-Sandbox.postman
 python3 -m json.tool docs/integration/postman/environments/Production-Template.postman_environment.json >/dev/null
 python3 -m unittest discover -s tests -q
 ```
+
+## Complete endpoint contract: Gateway HTTP server
+
+| Method | Endpoint | Authorization | Request Body | Success |
+|---|---|---|---|---|
+| GET | `{{baseUrl}}/health` | None | None | 200, `{"status":"ok","version":"2.2"}` on the current code |
+| POST | `{{baseUrl}}/api/approval-requests` | `Bearer {{apiKey}}` | Universal JSON approval request (folder A/02) | 201 new / 200 duplicate, `{"approval_request":{...},"created":true/false}` |
+| GET | `{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}` | `Bearer {{apiKey}}` | None | 200, `{"approval_request":{...}}` |
+| POST | `{{baseUrl}}/api/approval-requests/{{gatewayReferenceId}}/cancel` | `Bearer {{apiKey}}` | None | 200, cancellation result; use only for disposable test tasks |
+| POST | `{{baseUrl}}/api/workflow-events` | `Bearer {{apiKey}}` | Exactly `event_id,source_system,request_type,reference_id` | 202 new / 200 same event replay; **requires registered event resolver, not available for generic adapter** |
+| GET | `{{baseUrl}}/webhook/whatsapp` | Meta verification token in query | None | Meta subscription challenge; **Meta-only, not ERP integration** |
+| POST | `{{baseUrl}}/webhook/whatsapp` | Valid Meta `X-Hub-Signature-256` | Signed Meta webhook JSON | Provider acknowledgement; **Meta-only, not ERP integration** |
+
+All authenticated JSON POST bodies use `Content-Type: application/json`. Each ERP API client is scoped to its registered `source_system`. No API exists to register a new ERP or change an actor through a public JSON payload.
+
+## ERP-owned endpoints — requests sent TO the ERP backend, NOT Gateway routes
+
+| Method | ERP Endpoint (example only) | Headers | Body | Expected reply |
+|---|---|---|---|---|
+| POST | `{{erpVerifyUrl}}` | `Authorization: Bearer {{erpVerifyToken}}`, `Content-Type: application/json` | `company, request_type, reference_id, step_id, actor_directory_uuid, workflow_version` | 200 with exact current actor/record verification fields, or 403 |
+| POST | `{{erpCallbackUrl}}` | `Content-Type: application/json`, `X-Approval-Gateway-Timestamp`, `X-Approval-Gateway-Signature`, `Idempotency-Key` | Signed decision event, folder E/07 example | 200 with matching `event_id` and `execution_status=applied|rejected` |
+
+The callback is emitted automatically by the gateway worker after an authorized WhatsApp decision. **Folder E/07 is a contract example only:** its sample timestamp and signature are intentionally blank. A raw/manual Postman request cannot validly impersonate a signed gateway callback. `erpVerifyToken` is an **operator-side secret**; only populate this for an isolated ERP developer sandbox; never export or distribute it. There is no generic event resolver for `POST /api/workflow-events`.
+
+Local `http://127.0.0.1:8090/verify` and `/callback` are example addresses **not** running by default. Start an independently configured mock ERP or replace them with your ERP's actual sandbox URLs.
+
+## Release readiness
+
+This collection is a complete interface/contract template, **not a guarantee a new ERP works immediately with only the API key**. Register the ERP, provision its verification endpoint and signed callback, verify trusted approver identity and phone, and certify the flow using a sandbox ERP. No live PETA configuration is changed by importing the files.
