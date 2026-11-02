@@ -1,0 +1,152 @@
+openapi: 3.1.0
+info:
+  title: WhatsApp Approval Gateway — ERP API
+  version: 1.0.0
+  description: Contract for current ERP-facing endpoints. Callback receiver is implemented by each ERP.
+servers:
+  - url: https://gateway.example
+    description: Replace with your operator-provided HTTPS URL.
+paths:
+  /health:
+    get:
+      operationId: health
+      summary: Process health (not end-to-end readiness)
+      responses:
+        '200':
+          description: Process online
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, const: ok}
+                  version: {type: string}
+  /api/workflow-events:
+    post:
+      operationId: publishWorkflowEvent
+      summary: Store an authenticated workflow trigger for asynchronous resolution
+      security: [{BearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [event_id, source_system, request_type, reference_id]
+              properties:
+                event_id: {type: string, format: uuid}
+                source_system: {type: string, maxLength: 200}
+                request_type: {type: string, maxLength: 200}
+                reference_id: {type: string, maxLength: 200}
+      responses:
+        '202': {description: Newly persisted event, content: {application/json: {schema: {$ref: '#/components/schemas/EventReceipt'}}}}
+        '200': {description: Same event replay, content: {application/json: {schema: {$ref: '#/components/schemas/EventReceipt'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/approval-requests:
+    post:
+      operationId: createApprovalRequest
+      summary: Create an explicit actor-authorized approval task
+      security: [{BearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApprovalCreate'}
+      responses:
+        '201': {$ref: '#/components/responses/ApprovalCreated'}
+        '200': {$ref: '#/components/responses/ApprovalCreated'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/approval-requests/{reference}:
+    parameters:
+      - name: reference
+        in: path
+        required: true
+        schema: {type: string, pattern: '^AGR-[A-Z0-9]{1,96}$'}
+    get:
+      operationId: readApprovalRequest
+      security: [{BearerAuth: []}]
+      responses:
+        '200': {$ref: '#/components/responses/ApprovalRead'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/approval-requests/{reference}/cancel:
+    parameters:
+      - name: reference
+        in: path
+        required: true
+        schema: {type: string, pattern: '^AGR-[A-Z0-9]{1,96}$'}
+    post:
+      operationId: cancelApprovalRequest
+      security: [{BearerAuth: []}]
+      responses:
+        '200': {description: Cancellation result from gateway, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    EventReceipt:
+      type: object
+      required: [accepted, event_id]
+      properties:
+        accepted: {type: boolean}
+        event_id: {type: string, format: uuid}
+    ApprovalCreate:
+      type: object
+      additionalProperties: false
+      required: [company, request_type, reference_id, step_id, workflow_version, actor_directory_uuid, message]
+      properties:
+        source_system: {type: string, description: Must match Bearer key system if provided}
+        company: {type: string, minLength: 1, maxLength: 200}
+        request_type: {type: string, minLength: 1, maxLength: 200}
+        reference_id: {type: string, minLength: 1, maxLength: 200}
+        step_id: {type: string, minLength: 1, maxLength: 200}
+        workflow_version: {type: string, minLength: 1, maxLength: 200}
+        actor_directory_uuid: {type: string, format: uuid}
+        message: {type: string, minLength: 1, maxLength: 4096}
+        amount: {type: number, minimum: 0}
+        idempotency_key: {type: string, minLength: 1, maxLength: 200}
+        callback_url: {type: string, format: uri, description: Must equal registered URL}
+        payload: {type: object, additionalProperties: true}
+    ApprovalReadBody:
+      type: object
+      required: [approval_request]
+      properties:
+        approval_request: {type: object, additionalProperties: true}
+    Error:
+      type: object
+      properties:
+        error: {type: string}
+  responses:
+    Error:
+      description: Request rejected
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    ApprovalCreated:
+      description: Task created or existing identical task
+      content:
+        application/json:
+          schema:
+            allOf:
+              - {$ref: '#/components/schemas/ApprovalReadBody'}
+              - type: object
+                properties:
+                  created: {type: boolean}
+    ApprovalRead:
+      description: Current task state
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApprovalReadBody'}
