@@ -1,6 +1,6 @@
 {
   "info": {
-    "name": "ERP WhatsApp Approval Gateway — Complete Developer Postman Kit v1.2",
+    "name": "ERP WhatsApp Approval Gateway — Universal Postman Integration Kit v1.3",
     "description": "PRIMARY developer integration deliverable. Configure collection variables locally. Every ERP uses identical top-level JSON approval fields; unique business metadata goes in payload. API key identifies the ERP, while the separately configured ERP verification endpoint establishes current approver authorization. An accepted request does NOT mean sent, approved, or applied. Do not run destructive requests against production. IMPORTANT: Import and select one of the supplied Postman Environments (Local Sandbox or Production Template). All collection variables have corresponding environment variables; the active environment takes precedence. gatewayReferenceId is written back to the selected environment after a successful creation. Collection includes gateway HTTP endpoints plus ERP-owned verification/callback contract examples. ERP-owned example endpoints cannot be called on gateway baseUrl.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
@@ -548,6 +548,147 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "F — Example Payloads by ERP (TEMPLATES — NOT RUNNABLE BY DEFAULT)",
+      "description": "Five illustrative ERP-specific bodies. Same top-level JSON contract with system-specific payload. Replace all example values; use per-ERP registered API keys. Do NOT run folder as collection runner or use production until approved.",
+      "item": [
+        {
+          "name": "EXAMPLE — GHRM — Leave",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"ghrm\",\n  \"company\": \"14\",\n  \"request_type\": \"leave_approval\",\n  \"reference_id\": \"LEAVE-2026-001\",\n  \"step_id\": \"manager\",\n  \"workflow_version\": \"record-v1\",\n  \"actor_directory_uuid\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"message\": \"Leave request requires approval\",\n  \"idempotency_key\": \"ghrm-LEAVE-2026-001-manager-record-v1\",\n  \"payload\": {\n    \"employee_id\": 123,\n    \"leave_days\": 5,\n    \"document_url\": \"https://erp.example/leave/LEAVE-2026-001\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "ILLUSTRATIVE CONTRACT ONLY — ghrm. Use a registered ghrm API key and its own verification/callback endpoints. Replace company, actor UUID, workflow version, step, reference and metadata from the actual ERP. Do not send against an unconfigured or live ERP. Inherits Bearer {{apiKey}} from collection; key MUST match source_system. This is not the default ready-to-run sandbox request."
+          }
+        },
+        {
+          "name": "EXAMPLE — ABS — Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"abs\",\n  \"company\": \"14\",\n  \"request_type\": \"payment_approval\",\n  \"reference_id\": \"PAY-2026-001\",\n  \"step_id\": \"finance_manager\",\n  \"workflow_version\": \"record-v1\",\n  \"actor_directory_uuid\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"message\": \"Payment requires approval\",\n  \"idempotency_key\": \"abs-PAY-2026-001-finance_manager-record-v1\",\n  \"amount\": 150000,\n  \"payload\": {\n    \"invoice_id\": 456,\n    \"currency\": \"TZS\",\n    \"payment_reference\": \"PAY-2026-001\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "ILLUSTRATIVE CONTRACT ONLY — abs. Use a registered abs API key and its own verification/callback endpoints. Replace company, actor UUID, workflow version, step, reference and metadata from the actual ERP. Do not send against an unconfigured or live ERP. Inherits Bearer {{apiKey}} from collection; key MUST match source_system. This is not the default ready-to-run sandbox request."
+          }
+        },
+        {
+          "name": "EXAMPLE — CRM — Discount",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"crm\",\n  \"company\": \"14\",\n  \"request_type\": \"discount_approval\",\n  \"reference_id\": \"QUOTE-2026-001\",\n  \"step_id\": \"sales_manager\",\n  \"workflow_version\": \"record-v1\",\n  \"actor_directory_uuid\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"message\": \"Quotation discount requires approval\",\n  \"idempotency_key\": \"crm-QUOTE-2026-001-sales_manager-record-v1\",\n  \"payload\": {\n    \"quotation_id\": 789,\n    \"customer_id\": 45,\n    \"discount_percent\": 10\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "ILLUSTRATIVE CONTRACT ONLY — crm. Use a registered crm API key and its own verification/callback endpoints. Replace company, actor UUID, workflow version, step, reference and metadata from the actual ERP. Do not send against an unconfigured or live ERP. Inherits Bearer {{apiKey}} from collection; key MUST match source_system. This is not the default ready-to-run sandbox request."
+          }
+        },
+        {
+          "name": "EXAMPLE — MaCargo — Shipment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"macargo\",\n  \"company\": \"14\",\n  \"request_type\": \"shipment_approval\",\n  \"reference_id\": \"SHIP-2026-001\",\n  \"step_id\": \"operations_manager\",\n  \"workflow_version\": \"record-v1\",\n  \"actor_directory_uuid\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"message\": \"Shipment requires approval\",\n  \"idempotency_key\": \"macargo-SHIP-2026-001-operations_manager-record-v1\",\n  \"payload\": {\n    \"shipment_id\": 321,\n    \"origin\": \"Dar es Salaam\",\n    \"destination\": \"Morogoro\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "ILLUSTRATIVE CONTRACT ONLY — macargo. Use a registered macargo API key and its own verification/callback endpoints. Replace company, actor UUID, workflow version, step, reference and metadata from the actual ERP. Do not send against an unconfigured or live ERP. Inherits Bearer {{apiKey}} from collection; key MUST match source_system. This is not the default ready-to-run sandbox request."
+          }
+        },
+        {
+          "name": "EXAMPLE — Ticketing — Refund",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_system\": \"ticketing\",\n  \"company\": \"14\",\n  \"request_type\": \"refund_approval\",\n  \"reference_id\": \"REFUND-2026-001\",\n  \"step_id\": \"supervisor\",\n  \"workflow_version\": \"record-v1\",\n  \"actor_directory_uuid\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"message\": \"Ticket refund requires approval\",\n  \"idempotency_key\": \"ticketing-REFUND-2026-001-supervisor-record-v1\",\n  \"amount\": 45000,\n  \"payload\": {\n    \"booking_id\": 1122,\n    \"ticket_number\": \"TKT-001\",\n    \"currency\": \"TZS\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/approval-requests",
+            "description": "ILLUSTRATIVE CONTRACT ONLY — ticketing. Use a registered ticketing API key and its own verification/callback endpoints. Replace company, actor UUID, workflow version, step, reference and metadata from the actual ERP. Do not send against an unconfigured or live ERP. Inherits Bearer {{apiKey}} from collection; key MUST match source_system. This is not the default ready-to-run sandbox request."
+          }
         }
       ]
     }
