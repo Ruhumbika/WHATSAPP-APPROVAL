@@ -72,3 +72,7 @@ Local `http://127.0.0.1:8090/verify` and `/callback` are example addresses **not
 ## Release readiness
 
 This collection is a complete interface/contract template, **not a guarantee a new ERP works immediately with only the API key**. Register the ERP, provision its verification endpoint and signed callback, verify trusted approver identity and phone, and certify the flow using a sandbox ERP. No live PETA configuration is changed by importing the files.
+
+## Developer handoff and ERP-specific examples
+
+The send-ready document is [`../ERP-DEVELOPER-HANDOFF.md`](../ERP-DEVELOPER-HANDOFF.md). Folder **F — Example Payloads by ERP** contains five non-production templates: GHRM, ABS, CRM, MaCargo and Ticketing. The outer JSON field names remain fixed; business metadata varies under `payload`. Those examples are **not ready-to-run requests**: every ERP requires its own registered source-system key, verification endpoint, callback endpoint, and actual company/record/actor IDs. PETA retains its existing specialized adapter. Never run folder F in the collection runner or against production without explicit authorization.
