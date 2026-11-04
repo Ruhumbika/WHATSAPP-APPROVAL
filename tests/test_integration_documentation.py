@@ -11,6 +11,7 @@ REMOVED = (
     "docs/integration/LOCAL-SANDBOX.md",
     "docs/universal-erp-integration-v0.1.md",
     "REQUISITION_INTEGRATION_DEVELOPER_GUIDE.md",
+    "DOCUMENT_APPROVAL_SETUP.md",
 )
 
 class IntegrationDocsTests(unittest.TestCase):
