@@ -59,6 +59,13 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS integration_company_scopes (
+        system_name TEXT NOT NULL REFERENCES api_clients(system_name),
+        company TEXT NOT NULL,
+        PRIMARY KEY (system_name, company)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS actor_bindings (
         id INTEGER PRIMARY KEY,
         system_name TEXT NOT NULL
