@@ -1,4 +1,4 @@
-# WhatsApp Approval Gateway
+# WhatsApp Approval Gateway — ERP Integration Developer Guide
 
 Integrate approvals from your ERP into **our WhatsApp Business number** using a server-to-server API. Your users approve or reject on WhatsApp; your ERP remains the source of truth and executes the final decision.
 
