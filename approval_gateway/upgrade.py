@@ -66,6 +66,14 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS api_client_key_overlaps (
+        system_name TEXT PRIMARY KEY REFERENCES api_clients(system_name),
+        previous_key_hash TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS integration_credential_events (
         id INTEGER PRIMARY KEY,
         system_name TEXT NOT NULL REFERENCES api_clients(system_name),
