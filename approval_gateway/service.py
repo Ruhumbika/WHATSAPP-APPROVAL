@@ -362,6 +362,19 @@ def _provision_verified_actor(
 
     phone = _phone(actor.phone_number)
 
+    # An ERP assertion alone does not prove WhatsApp phone ownership.
+    # Generic integrations require a separately enrolled, active actor binding.
+    from .integrations.generic import GenericWorkflowGuard
+    if isinstance(get_workflow_guard(system), GenericWorkflowGuard):
+        binding, approver = _assigned_actor(conn, system, company, actor.directory_uuid)
+        if approver["company"] not in {company, "all"}:
+            raise ServiceError("Approver company scope mismatch.", 403)
+        if binding["source_user_id"] != actor.source_user_id:
+            raise ServiceError("ERP source user differs from verified binding.", 403)
+        if _phone(approver["phone_number"]) != phone:
+            raise ServiceError("ERP phone differs from verified binding.", 403)
+        return binding, approver
+
     if existing is not None:
         binding, approver = _assigned_actor(
             conn, system, company, actor.directory_uuid
