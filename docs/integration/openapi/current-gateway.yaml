@@ -95,6 +95,45 @@ paths:
                   actor_directory_uuid: {type: string, format: uuid}
         '401': {description: Invalid gateway API key}
         '403': {description: Unconfigured integration or unauthorized company}
+  /api/identity-links/{directory_uuid}/revoke:
+    parameters:
+      - name: directory_uuid
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      summary: Revoke an existing verified link for this ERP and company
+      description: |
+        Only the registered ERP may revoke its scoped actor binding. Any
+        pending approval must be explicitly cancelled first. To reassign to a
+        different phone, initiate a new identity link and require fresh phone
+        possession proof on our WhatsApp Business number.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [company, source_user_id]
+              properties:
+                company: {type: string, example: '14'}
+                source_user_id: {type: string, example: '7'}
+      responses:
+        '200':
+          description: Link revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, enum: [revoked]}
+                  actor_directory_uuid: {type: string, format: uuid}
+                  company: {type: string}
+        '401': {description: Invalid API key}
+        '403': {description: ERP company or actor mismatch}
+        '404': {description: No active link}
+        '409': {description: Pending approvals must be resolved or cancelled first}
   /api/approval-requests:
     post:
       summary: Create one approval task
