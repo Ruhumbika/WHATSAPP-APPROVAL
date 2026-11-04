@@ -57,12 +57,16 @@ class UniversalContractFlowTests(unittest.TestCase):
             conn.execute("INSERT INTO integration_company_scopes (system_name, company) VALUES (?, ?)", ("external", "14"))
             conn.execute("INSERT INTO integrations (system_name,callback_url,callback_secret) VALUES (?,?,?)",
                          ("external", "https://external.example.com/callback", "s" * 32))
-            conn.execute("""INSERT INTO approvers
-                (id,name,role,company,phone_number,active,created_at,updated_at)
-                VALUES (1,'Approver','manager','14','255700000001',1,'now','now')""")
-            conn.execute("""INSERT INTO actor_bindings
-                (system_name,company,directory_uuid,source_user_id,approver_id)
-                VALUES ('external','14',?,?,1)""", (ACTOR, "7"))
+        from approval_gateway.identity_link import start, receive
+        challenge = start(self.settings, "gateway-key", {
+            "company": "14", "actor_directory_uuid": ACTOR,
+            "source_user_id": "7", "phone_number": "255700000001",
+        })
+        linked = receive(self.settings, {
+            "action": "conversation", "text": challenge["whatsapp_message"],
+            "phone": "255700000001", "message_id": "wamid.fixture.link",
+        })
+        self.assertTrue(linked["processed"])
 
     def fake_open(self, request, **kwargs):
         url = request.full_url
