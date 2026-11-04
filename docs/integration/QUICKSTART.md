@@ -126,7 +126,7 @@ Use the actual `event_id` received; the example above is **not** literal.
 If execution is definitively refused, return `execution_status: "rejected"`.
 Never return `applied` before the ERP transaction commits.
 
-**6. Handle cancellation and phone changes.** Cancel pending tasks, then
+**6. Handle cancellation and phone changes.** Cancel pending tasks and resolve any outstanding decision callbacks, then
 `POST /api/identity-links/{uuid}/revoke` with `company` and
 `source_user_id`. Start a new LINK challenge to verify any new number.
 
