@@ -45,6 +45,17 @@ load the configured generic adapter. Do not run these commands against the
 production environment without change review. An operator must set secure
 environment variables. The readiness report is configuration-only.
 
+## Provider-owned WhatsApp template requirement
+
+Generic ERP approvals now select the gateway's `approval_request` template,
+with company and message body parameters and our Approve/Reject buttons.
+Existing PETA workflows retain their configured document-based template.
+**Before live onboarding**, the gateway operator must confirm that this
+`approval_request` template is approved for OUR WhatsApp Business Account
+with the exact parameter/button layout. Automated dry-run tests cannot prove
+Meta template approval or production delivery. ERP customers do not configure
+or purchase templates themselves.
+
 ## ERP developer implementation
 
 **1. Authenticate your employee inside your ERP.** Identify your local
