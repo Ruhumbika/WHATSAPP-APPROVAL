@@ -46,6 +46,46 @@ class LocalSandboxTests(unittest.TestCase):
                 "SELECT callback_secret FROM integrations"
             ).fetchone()[0], report["callback_secret"])
 
+    def test_bootstrapped_sandbox_serves_isolated_http_contract(self):
+        import json
+        import threading
+        import urllib.request
+        from dataclasses import replace
+        from approval_gateway.server import Server
+
+        report = create_local_sandbox(self.root, 8098)
+        values = dict(
+            line.split("=", 1)
+            for line in Path(report["env_file"]).read_text().splitlines()
+            if line and not line.startswith("#")
+        )
+        with patch.dict(os.environ, values):
+            loaded = load_settings()
+        self.assertTrue(loaded.dry_run_whatsapp)
+        self.assertEqual(loaded.host, "127.0.0.1")
+        self.assertEqual(loaded.whatsapp_access_token, "")
+        self.assertEqual(loaded.meta_app_secret, "")
+        with Server(replace(loaded, port=0)) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = "http://127.0.0.1:" + str(server.server_port)
+                with urllib.request.urlopen(base + "/health", timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                request = urllib.request.Request(
+                    base + "/api/integration-status",
+                    headers={"Authorization": "Bearer " + report["api_key"]},
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    details = json.load(response)
+                self.assertEqual(details["system"], "sandbox_erp")
+                self.assertEqual(details["allowed_companies"], ["sandbox"])
+                self.assertFalse(details["configuration_complete"])
+                self.assertFalse(details["integration_ready"])
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
     def test_refuses_overwrite_and_invalid_port(self):
         with self.assertRaises(ValueError):
             create_local_sandbox(self.root, 80)
