@@ -125,6 +125,17 @@ class UniversalContractFlowTests(unittest.TestCase):
                 operation()
             self.assertEqual(denied.exception.status, 403)
 
+    def test_intake_rejects_erp_digest_version_mismatch(self):
+        self.digest = "revision-2"
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            with self.assertRaises(ServiceError) as denied:
+                self.create_task()
+            self.assertEqual(denied.exception.status, 409)
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM approval_requests"
+            ).fetchone()[0], 0)
+
     def test_unverified_actor_cannot_enroll_from_erp_assertion(self):
         with connection(self.settings) as conn:
             conn.execute("DELETE FROM actor_bindings WHERE system_name=?", ("external",))
