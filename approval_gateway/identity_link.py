@@ -190,6 +190,12 @@ def status(settings, key: str, identity: str, company: str) -> dict:
         raise ServiceError("Invalid Directory UUID.") from None
     with connection(settings) as conn:
         system = get_client(conn, key)["system_name"]
+        try:
+            generic = isinstance(get_workflow_guard(system), GenericWorkflowGuard)
+        except IntegrationUnavailable:
+            generic = False
+        if not generic:
+            raise ServiceError("Link status requires a configured generic ERP.", 403)
         _check_company_scope(conn, system, company)
         binding = conn.execute(
             """SELECT 1 FROM actor_bindings
