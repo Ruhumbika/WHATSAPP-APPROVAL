@@ -193,6 +193,39 @@ class UniversalContractFlowTests(unittest.TestCase):
             self.assertEqual(task_state["execution_status"], "not_requested")
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM callback_attempts").fetchone()[0], 0)
 
+    def test_whatsapp_phone_link_to_generic_erp_execution(self):
+        from approval_gateway.identity_link import start, receive, status
+        with connection(self.settings) as conn:
+            conn.execute("DELETE FROM actor_bindings WHERE system_name='external'")
+        challenge = start(self.settings, "gateway-key", {
+            "company": "14", "actor_directory_uuid": ACTOR,
+            "source_user_id": "7", "phone_number": "255700000001",
+        })
+        self.assertFalse(status(self.settings, "gateway-key", ACTOR, "14")["verified"])
+        linked = receive(self.settings, {
+            "action": "conversation", "text": challenge["whatsapp_message"],
+            "phone": "255700000001", "message_id": "wamid.link.contract",
+        })
+        self.assertTrue(linked["processed"])
+        self.assertTrue(status(self.settings, "gateway-key", ACTOR, "14")["verified"])
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            task, created = self.create_task()
+            self.assertTrue(created)
+            decided = decide(self.settings, {
+                "action": "approved", "reference": task["gateway_reference_id"],
+                "phone": "255700000001", "message_id": "wamid.decision.contract",
+                "text": "Approve", "context_id": None,
+            })
+            self.assertTrue(decided["processed"])
+            claimed = _claim_callback(self.settings)
+            self.assertIsNotNone(claimed)
+            _send_callback(self.settings, claimed)
+        self.assertEqual(self.callback_calls, 1)
+        with connection(self.settings) as conn:
+            row = conn.execute("SELECT execution_status FROM approval_requests WHERE id=?",
+                               (task["id"],)).fetchone()
+            self.assertEqual(row["execution_status"], "applied")
+
     def test_create_decide_signed_callback_and_confirmation(self):
         with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
             task, created = self.create_task()
