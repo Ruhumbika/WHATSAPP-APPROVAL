@@ -60,11 +60,12 @@ class IdentityLinkHTTPTests(unittest.TestCase):
         self.thread.join(timeout=3)
         self.server.server_close()
 
-    def fetch(self, method, path, payload=None, auth=True, meta=False, sig_ok=True):
+    def fetch(self, method, path, payload=None, auth=True, meta=False, sig_ok=True,
+              api_key="gateway-key"):
         body = json.dumps(payload).encode() if payload is not None else None
         headers = {"Content-Type": "application/json"}
         if auth:
-            headers["Authorization"] = "Bearer gateway-key"
+            headers["Authorization"] = "Bearer " + api_key
         if meta:
             signature = hmac.new(
                 b"meta-test-secret", body, hashlib.sha256
@@ -147,6 +148,38 @@ class IdentityLinkHTTPTests(unittest.TestCase):
                 "company": "14", "actor_directory_uuid": ACTOR,
                 "source_user_id": "7", "phone_number": "255700000009",
             })[0], 201
+        )
+
+    def test_staged_rotation_keeps_api_usable_during_key_switch(self):
+        from approval_gateway.manage_erp_credentials import rotate_api_key, revoke_client
+        with connection(self.settings) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            new_key = rotate_api_key(conn, "external", overlap_minutes=15)
+        for key in ("gateway-key", new_key):
+            status, body = self.fetch(
+                "GET", "/api/integration-status", api_key=key
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(body["system"], "external")
+        with connection(self.settings) as conn:
+            conn.execute(
+                "UPDATE api_client_key_overlaps SET expires_at=? WHERE system_name=?",
+                ("2000-01-01T00:00:00+00:00", "external"),
+            )
+        self.assertEqual(
+            self.fetch("GET", "/api/integration-status", api_key="gateway-key")[0],
+            401,
+        )
+        self.assertEqual(
+            self.fetch("GET", "/api/integration-status", api_key=new_key)[0],
+            200,
+        )
+        with connection(self.settings) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            revoke_client(conn, "external")
+        self.assertEqual(
+            self.fetch("GET", "/api/integration-status", api_key=new_key)[0],
+            401,
         )
 
     def test_external_erp_can_inspect_own_configuration_without_secrets(self):
