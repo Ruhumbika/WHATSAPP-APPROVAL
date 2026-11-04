@@ -46,17 +46,16 @@ class GenericWhatsAppTemplateTests(unittest.TestCase):
                 "INSERT INTO integration_company_scopes VALUES (?,?)",
                 ("ghrm", "14"),
             )
-            conn.execute(
-                """INSERT INTO approvers
-                (id,name,role,company,phone_number,active,created_at,updated_at)
-                VALUES (1,'Approver','reviewer','14','255700000001',1,'now','now')"""
-            )
-            conn.execute(
-                """INSERT INTO actor_bindings
-                (system_name,company,directory_uuid,source_user_id,approver_id,active)
-                VALUES ('ghrm','14',?,?,1,1)""",
-                (ACTOR, "7"),
-            )
+        from approval_gateway.identity_link import start, receive
+        challenge = start(self.settings, "ghrm-key", {
+            "company": "14", "actor_directory_uuid": ACTOR,
+            "source_user_id": "7", "phone_number": "255700000001",
+        })
+        linked = receive(self.settings, {
+            "action": "conversation", "text": challenge["whatsapp_message"],
+            "phone": "255700000001", "message_id": "wamid.fixture.ghrm",
+        })
+        self.assertTrue(linked["processed"])
 
     def test_generic_template_does_not_require_peta_pdf(self):
         client = WhatsAppClient(self.settings)
