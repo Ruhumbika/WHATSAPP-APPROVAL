@@ -66,6 +66,20 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS integration_credential_events (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL REFERENCES api_clients(system_name),
+        event_type TEXT NOT NULL CHECK(
+            event_type IN ('api_key_rotated', 'client_revoked')
+        ),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_integration_credential_events_system
+        ON integration_credential_events(system_name, id)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS actor_bindings (
         id INTEGER PRIMARY KEY,
         system_name TEXT NOT NULL
