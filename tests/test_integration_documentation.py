@@ -12,6 +12,8 @@ REMOVED = (
     "docs/universal-erp-integration-v0.1.md",
     "REQUISITION_INTEGRATION_DEVELOPER_GUIDE.md",
     "DOCUMENT_APPROVAL_SETUP.md",
+    "Approval_Gateway_API_Contract_v1.md",
+    "LOCAL_APPLY_STEPS.md",
 )
 
 class IntegrationDocsTests(unittest.TestCase):
