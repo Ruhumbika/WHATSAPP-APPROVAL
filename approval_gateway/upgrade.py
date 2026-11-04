@@ -66,6 +66,16 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS integration_webhook_events (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL REFERENCES api_clients(system_name),
+        previous_url TEXT NOT NULL,
+        new_url TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK(event_type='callback_url_updated'),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS api_client_key_overlaps (
         system_name TEXT PRIMARY KEY REFERENCES api_clients(system_name),
         previous_key_hash TEXT NOT NULL,
