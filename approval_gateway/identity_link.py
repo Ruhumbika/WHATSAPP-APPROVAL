@@ -287,15 +287,22 @@ def revoke(settings, key: str, identity: str, data: dict) -> dict:
             raise ServiceError("Source actor identity mismatch.", 403)
         # Explicit cancellation from the ERP must precede revocation.
         # This avoids orphaned approvals that users can no longer act on.
-        pending = conn.execute(
+        outstanding = conn.execute(
             """SELECT 1 FROM approval_requests
                WHERE source_system=? AND company=? AND actor_directory_uuid=?
-                 AND status='pending' LIMIT 1""",
+                 AND (
+                    status='pending'
+                    OR (
+                        status IN ('approved','rejected')
+                        AND COALESCE(execution_status,'') NOT IN ('applied','rejected')
+                    )
+                 ) LIMIT 1""",
             (system, company, identity),
         ).fetchone()
-        if pending:
+        if outstanding:
             raise ServiceError(
-                "Cancel pending approval requests before revoking this link.", 409
+                "Resolve pending approvals and outstanding ERP executions before "
+                "revoking this link.", 409
             )
         now = utc_now()
         conn.execute(
