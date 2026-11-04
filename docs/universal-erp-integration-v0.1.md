@@ -53,6 +53,20 @@ token; those require controlled operator changes. Automatic credentials,
 webhook updates, customer-facing onboarding and safe zero-downtime rotation
 remain future release gates.
 
+## Operator configuration preflight
+
+Once provisioning has completed, inspect an ERP without disclosing its keys:
+
+```bash
+python3 -m approval_gateway.integration_readiness --system external_erp
+```
+
+The report lists active API client, callback, company scopes and actor binding
+configuration. Its `integration_ready` field intentionally remains `false`:
+configuration alone cannot prove WhatsApp phone ownership, real Meta delivery,
+authorized ERP business execution or webhook deduplication. External acceptance
+tests are mandatory before a customer is marked production ready.
+
 ## Current gateway endpoints (unchanged)
 
 * `GET /health`
