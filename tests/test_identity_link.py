@@ -218,6 +218,48 @@ class IdentityLinkTests(unittest.TestCase):
             "company": "14", "source_user_id": "7",
         })["status"], "revoked")
 
+    def test_unacknowledged_decision_blocks_link_revocation(self):
+        from approval_gateway.integrations.permissions import WorkflowActor
+        from approval_gateway.service import create
+        challenge = start(self.settings, "external-key", self.data)
+        self.send(challenge["whatsapp_message"])
+        with connection(self.settings) as conn:
+            conn.execute("INSERT INTO integrations VALUES (?,?,?)",
+                         ("external", "https://erp.example.com/callback", "s" * 32))
+        actor = WorkflowActor(
+            directory_uuid=UUID, source_user_id="7",
+            phone_number=PHONE, module_id="leave",
+            step_id="manager", record_digest="revision-1",
+        )
+        with patch("approval_gateway.integrations.generic.GenericWorkflowGuard.authorize",
+                   return_value=actor):
+            task, created = create(self.settings, "external-key", {
+                "source_system": "external", "company": "14",
+                "request_type": "leave_approval", "reference_id": "LEAVE-2",
+                "step_id": "manager", "workflow_version": "revision-1",
+                "actor_directory_uuid": UUID, "message": "Approve leave",
+                "payload": {"employee_id": "7"},
+            })
+        self.assertTrue(created)
+        with connection(self.settings) as conn:
+            conn.execute(
+                "UPDATE approval_requests SET status='approved',execution_status='pending' WHERE id=?",
+                (task["id"],),
+            )
+        with self.assertRaises(ServiceError) as pending:
+            revoke(self.settings, "external-key", UUID, {
+                "company": "14", "source_user_id": "7",
+            })
+        self.assertEqual(pending.exception.status, 409)
+        with connection(self.settings) as conn:
+            conn.execute(
+                "UPDATE approval_requests SET execution_status='applied' WHERE id=?",
+                (task["id"],),
+            )
+        self.assertEqual(revoke(self.settings, "external-key", UUID, {
+            "company": "14", "source_user_id": "7",
+        })["status"], "revoked")
+
     def test_wrong_source_user_cannot_revoke(self):
         challenge = start(self.settings, "external-key", self.data)
         self.send(challenge["whatsapp_message"])
