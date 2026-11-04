@@ -31,6 +31,12 @@ class CredentialLifecycleTests(unittest.TestCase):
                 company TEXT NOT NULL,
                 PRIMARY KEY (system_name, company)
             );
+            CREATE TABLE api_client_key_overlaps (
+                system_name TEXT PRIMARY KEY,
+                previous_key_hash TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE integration_credential_events (
                 id INTEGER PRIMARY KEY,
                 system_name TEXT NOT NULL,
@@ -58,6 +64,41 @@ class CredentialLifecycleTests(unittest.TestCase):
             "SELECT callback_secret FROM integrations WHERE system_name=?", ("external",)
         ).fetchone()
         self.assertEqual(callback["callback_secret"], self.callback_secret)
+
+    def test_staged_rotation_allows_both_then_expires_old_key(self):
+        self.conn.execute("BEGIN IMMEDIATE")
+        new_key = rotate_api_key(self.conn, "external", overlap_minutes=15)
+        self.conn.commit()
+        self.assertIsNotNone(authenticate_client(self.conn, new_key))
+        self.assertIsNotNone(authenticate_client(self.conn, self.old_key))
+        with self.assertRaises(ValueError):
+            rotate_api_key(self.conn, "external", overlap_minutes=15)
+        self.conn.execute(
+            "UPDATE api_client_key_overlaps SET expires_at=? WHERE system_name='external'",
+            ("2000-01-01T00:00:00+00:00",),
+        )
+        self.conn.commit()
+        self.assertIsNone(authenticate_client(self.conn, self.old_key))
+        self.assertIsNotNone(authenticate_client(self.conn, new_key))
+
+    def test_revocation_invalidates_overlap_and_current_key(self):
+        self.conn.execute("BEGIN IMMEDIATE")
+        new_key = rotate_api_key(self.conn, "external", overlap_minutes=30)
+        self.conn.commit()
+        self.assertIsNotNone(authenticate_client(self.conn, self.old_key))
+        self.conn.execute("BEGIN IMMEDIATE")
+        revoke_client(self.conn, "external")
+        self.conn.commit()
+        self.assertIsNone(authenticate_client(self.conn, self.old_key))
+        self.assertIsNone(authenticate_client(self.conn, new_key))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM api_client_key_overlaps"
+        ).fetchone()[0], 0)
+
+    def test_rejects_invalid_rotation_windows(self):
+        for minutes in (-1, 1441, 1.5, True):
+            with self.subTest(minutes=minutes), self.assertRaises(ValueError):
+                rotate_api_key(self.conn, "external", overlap_minutes=minutes)
 
     def test_revocation_disables_all_current_credentials(self):
         self.conn.execute("BEGIN IMMEDIATE")
