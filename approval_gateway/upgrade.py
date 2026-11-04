@@ -78,7 +78,7 @@ _SCHEMA_STATEMENTS = (
         id INTEGER PRIMARY KEY,
         system_name TEXT NOT NULL REFERENCES api_clients(system_name),
         event_type TEXT NOT NULL CHECK(
-            event_type IN ('api_key_rotated', 'client_revoked')
+            event_type IN ('api_key_rotated', 'client_revoked', 'api_key_overlap_finished')
         ),
         created_at TEXT NOT NULL
     )
