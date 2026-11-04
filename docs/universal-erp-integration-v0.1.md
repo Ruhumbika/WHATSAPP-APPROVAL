@@ -42,16 +42,24 @@ python3 -m approval_gateway.manage_erp_credentials --system external_erp --rotat
 python3 -m approval_gateway.manage_erp_credentials --system external_erp --revoke
 ```
 
-Rotation **immediately invalidates** the previous API key; there is no grace
-period or staged rollover. Do not rotate a live integration until the ERP has
-a coordinated deployment plan. Revocation stops authenticated intake/reads and
-prevents pending approvals from being authorized through an active source.
-Credential lifecycle changes are audit-recorded in the database.
+Rotation defaults to **immediate invalidation** of the old API key.
+For coordinated, non-disruptive deployment, use a bounded overlap:
+
+```bash
+python3 -m approval_gateway.manage_erp_credentials \\
+  --system external_erp --rotate-key --overlap-minutes 15
+```
+
+Both keys authenticate during those 15 minutes, then the old key expires
+without another restart or maintenance operation. The maximum overlap is
+1,440 minutes. Additional rotation while an overlap is active is rejected.
+Revocation immediately disables both keys and erases any overlap. The new
+key is printed only once; deliver it securely and deploy it at the ERP.
+Keep overlap short, monitor adoption and coordinate the rotation.
 
 This CLI does not rotate the separate callback HMAC secret or verification
-token; those require controlled operator changes. Automatic credentials,
-webhook updates, customer-facing onboarding and safe zero-downtime rotation
-remain future release gates.
+token; those require controlled operator changes. Customer-facing onboarding,
+webhook updates and live end-to-end acceptance remain release gates.
 
 ## Operator configuration preflight
 
