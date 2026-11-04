@@ -173,6 +173,29 @@ On successful application return HTTP 200 with **exactly** the same event ID and
 
 The ERP owns subsequent workflow steps and can submit the next task after committing the previous step.
 
+## Independent ERP sandbox reference
+
+The standalone Python example
+[`docs/integration/examples/python/mock_erp_server.py`](integration/examples/python/mock_erp_server.py)
+implements the other side of the contract. It provides `POST /verify` and
+`POST /callback` on loopback, stores a test record in its **own** SQLite
+database, authenticates the verifier bearer token, verifies signed callbacks,
+checks the actor/record/step/version again before execution, records
+`event_id` in the same transaction as the business update, acknowledges
+retries and rejects conflicting replays.
+
+```bash
+export ERP_VERIFY_TOKEN='replace-with-a-long-random-test-token'
+export ERP_CALLBACK_SECRET='replace-with-the-provisioned-callback-secret'
+python3 docs/integration/examples/python/mock_erp_server.py
+```
+
+This sample is for sandbox/developer learning, **not production deployment**.
+It does not establish real Directory permissions or WhatsApp phone ownership.
+Configure the gateway callback and verification URLs against HTTPS endpoints
+when running an integration test; production rejects arbitrary HTTP callback
+URLs.
+
 ## Required acceptance before public release
 
 1. Independent external mock ERP sends a request and receives a real WhatsApp decision.
