@@ -289,6 +289,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
             self.reply(result, 202 if created else 200)
             return
+        if path == "/api/integration-status":
+            if method != "GET":
+                raise ServiceError("Method not allowed.", 405)
+            from .integration_readiness import read_erp_status
+            self.reply(read_erp_status(self.settings, self.key()))
+            return
         if path == "/api/identity-links":
             if method != "POST":
                 raise ServiceError("Method not allowed.", 405)
