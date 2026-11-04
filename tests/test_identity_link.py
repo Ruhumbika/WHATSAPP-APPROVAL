@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from approval_gateway.config import load_settings
 from approval_gateway.db import connection, init_db
-from approval_gateway.identity_link import start, receive, status
+from approval_gateway.identity_link import start, receive, status, revoke
 from approval_gateway.integrations.generic import GenericWorkflowGuard
 from approval_gateway.integrations.registry import configure_workflow_guards
 from approval_gateway.repository import create_api_client
@@ -138,6 +138,65 @@ class IdentityLinkTests(unittest.TestCase):
                 (UUID, "7", pid),
             )
         self.assertFalse(status(self.settings, "external-key", UUID, "14")["verified"])
+
+    def test_revoke_then_relink_requires_fresh_whatsapp_proof(self):
+        first = start(self.settings, "external-key", self.data)
+        self.assertEqual(self.send(first["whatsapp_message"])["reason"], "phone_link_verified")
+        with connection(self.settings) as conn:
+            old_approver = conn.execute(
+                "SELECT approver_id FROM actor_bindings WHERE system_name='external'"
+            ).fetchone()[0]
+        result = revoke(self.settings, "external-key", UUID, {
+            "company": "14", "source_user_id": "7",
+        })
+        self.assertEqual(result["status"], "revoked")
+        self.assertFalse(status(self.settings, "external-key", UUID, "14")["verified"])
+        with self.assertRaises(ServiceError):
+            revoke(self.settings, "external-key", UUID, {
+                "company": "14", "source_user_id": "7",
+            })
+        second = start(self.settings, "external-key", dict(
+            self.data, phone_number="255700000009"
+        ))
+        self.assertEqual(
+            self.send(second["whatsapp_message"], phone=PHONE, message_id="wamid.bad")["reason"],
+            "invalid_or_expired_link",
+        )
+        self.assertEqual(
+            self.send(second["whatsapp_message"], phone="255700000009",
+                      message_id="wamid.relink")["reason"],
+            "phone_link_verified",
+        )
+        self.assertTrue(status(self.settings, "external-key", UUID, "14")["verified"])
+        with connection(self.settings) as conn:
+            row = conn.execute(
+                "SELECT approver_id,active FROM actor_bindings WHERE system_name='external'"
+            ).fetchone()
+            self.assertEqual(row["active"], 1)
+            self.assertNotEqual(row["approver_id"], old_approver)
+            events = [v[0] for v in conn.execute(
+                "SELECT event_type FROM identity_link_events ORDER BY id"
+            )]
+            self.assertEqual(events, ["linked", "revoked", "relinked"])
+
+    def test_wrong_source_user_cannot_revoke(self):
+        challenge = start(self.settings, "external-key", self.data)
+        self.send(challenge["whatsapp_message"])
+        with self.assertRaises(ServiceError) as error:
+            revoke(self.settings, "external-key", UUID, {
+                "company": "14", "source_user_id": "999",
+            })
+        self.assertEqual(error.exception.status, 403)
+        self.assertTrue(status(self.settings, "external-key", UUID, "14")["verified"])
+
+    def test_other_erp_cannot_revoke(self):
+        challenge = start(self.settings, "external-key", self.data)
+        self.send(challenge["whatsapp_message"])
+        with self.assertRaises(ServiceError):
+            revoke(self.settings, "other-key", UUID, {
+                "company": "14", "source_user_id": "7",
+            })
+        self.assertTrue(status(self.settings, "external-key", UUID, "14")["verified"])
 
     def test_unrelated_incoming_text_is_not_consumed(self):
         self.assertIsNone(self.send("Approve", message_id="wamid.other"))
