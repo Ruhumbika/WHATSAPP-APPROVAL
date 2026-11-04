@@ -382,6 +382,14 @@ def _provision_verified_actor(
             raise ServiceError("ERP source user differs from verified binding.", 403)
         if _phone(approver["phone_number"]) != phone:
             raise ServiceError("ERP phone differs from verified binding.", 403)
+        from .identity_verification import has_current_phone_proof
+        if not has_current_phone_proof(
+            conn, system, company, actor.directory_uuid,
+            actor.source_user_id, approver["id"], phone,
+        ):
+            raise ServiceError(
+                "WhatsApp phone proof is missing, revoked or no longer current.", 403
+            )
         return binding, approver
 
     if existing is not None:
