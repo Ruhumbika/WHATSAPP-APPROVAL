@@ -118,6 +118,37 @@ class IdentityLinkHTTPTests(unittest.TestCase):
         )
         self.assertEqual(self.fetch("GET", path)[1]["verified"], True)
 
+    def test_revoke_link_over_http_then_verify_relink_is_required(self):
+        created_status, created = self.fetch("POST", "/api/identity-links", {
+            "company": "14", "actor_directory_uuid": ACTOR,
+            "source_user_id": "7", "phone_number": "255700000001",
+        })
+        self.assertEqual(created_status, 201)
+        self.assertEqual(
+            self.fetch("POST", "/webhook/whatsapp",
+                       self.message(created["whatsapp_message"]),
+                       auth=False, meta=True)[0], 200
+        )
+        path = "/api/identity-links/" + quote(ACTOR) + "?company=14"
+        self.assertTrue(self.fetch("GET", path)[1]["verified"])
+        revoke_path = "/api/identity-links/" + quote(ACTOR) + "/revoke"
+        code, response = self.fetch("POST", revoke_path, {
+            "company": "14", "source_user_id": "7",
+        })
+        self.assertEqual(code, 200)
+        self.assertEqual(response["status"], "revoked")
+        self.assertFalse(self.fetch("GET", path)[1]["verified"])
+        code, response = self.fetch("POST", revoke_path, {
+            "company": "14", "source_user_id": "7",
+        })
+        self.assertEqual(code, 404)
+        self.assertEqual(
+            self.fetch("POST", "/api/identity-links", {
+                "company": "14", "actor_directory_uuid": ACTOR,
+                "source_user_id": "7", "phone_number": "255700000009",
+            })[0], 201
+        )
+
     def test_meta_signature_is_required_to_link(self):
         _, created = self.fetch("POST", "/api/identity-links", {
             "company": "14", "actor_directory_uuid": ACTOR,
