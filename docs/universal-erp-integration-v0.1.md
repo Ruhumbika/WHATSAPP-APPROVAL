@@ -119,7 +119,7 @@ Content-Type: application/json
 
 Only the same authenticated ERP, company and source-user binding may revoke.
 Revocation is rejected with HTTP 409 while pending approval tasks exist.
-**The ERP must cancel those tasks first** through the existing
+**The ERP must cancel pending tasks and wait for outstanding decisions to receive terminal ERP acknowledgments first** through the existing
 `/api/approval-requests/{id}/cancel` endpoint, or resolve them.
 
 After revocation, `GET /api/identity-links/{uuid}?company=14` returns
