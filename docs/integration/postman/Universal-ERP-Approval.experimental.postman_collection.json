@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "WhatsApp Approval Gateway - Generic ERP Developer (experimental)",
-    "description": "Uses existing gateway endpoints; generic ERP authorization adapter required on server. Not production-ready onboarding.",
+    "description": "ERP integrates with gateway API only. All WhatsApp delivery, templates and signed Meta webhook events belong exclusively to the gateway. Development branch only; not production-ready.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -28,6 +28,14 @@
     {
       "key": "actor_directory_uuid",
       "value": "0656c52c-970d-11f1-b365-6805cae19a58"
+    },
+    {
+      "key": "actor_phone",
+      "value": "255700000001"
+    },
+    {
+      "key": "source_user_id",
+      "value": "7"
     }
   ],
   "item": [
@@ -43,6 +51,63 @@
           "script": {
             "exec": [
               "pm.test('Gateway reachable', function () {pm.response.to.have.status(200);});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Start WhatsApp phone link (our gateway WhatsApp number)",
+      "request": {
+        "method": "POST",
+        "url": "{{gateway_base_url}}/api/identity-links",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company\": \"{{company}}\",\n  \"actor_directory_uuid\": \"{{actor_directory_uuid}}\",\n  \"source_user_id\": \"{{source_user_id}}\",\n  \"phone_number\": \"{{actor_phone}}\"\n}"
+        },
+        "description": "ERP shows returned whatsapp_message only to its authenticated user. That user sends it from the configured phone to OUR WhatsApp Business number. Do not put challenge codes in logs or shared screenshots."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Phone verification challenge created', function () {pm.response.to.have.status(201);});",
+              "if(pm.response.code===201) {const d=pm.response.json(); pm.expect(d.status).to.eql('pending_phone_verification');}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Check WhatsApp phone link status",
+      "request": {
+        "method": "GET",
+        "url": "{{gateway_base_url}}/api/identity-links/{{actor_directory_uuid}}?company={{company}}",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          }
+        ],
+        "description": "verified=true is phone-possession proof through OUR signed Meta webhook; ERP still owns user authentication and workflow permissions."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Scoped link status available', function () {pm.response.to.have.status(200);});"
             ]
           }
         }
