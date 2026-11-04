@@ -61,7 +61,18 @@ def read_erp_status(settings, key: str) -> dict[str, object]:
     with connection(settings) as conn:
         conn.execute("BEGIN")
         system = get_client(conn, key)["system_name"]
-        return inspect_integration(conn, system)
+        report = inspect_integration(conn, system)
+    from .integrations.generic import GenericWorkflowGuard
+    from .integrations.registry import get_workflow_guard
+    from .integrations.permissions import IntegrationUnavailable
+
+    try:
+        adapter_loaded = isinstance(get_workflow_guard(system), GenericWorkflowGuard)
+    except IntegrationUnavailable:
+        adapter_loaded = False
+    report["configuration_checks"]["generic_adapter_loaded"] = adapter_loaded
+    report["configuration_complete"] = all(report["configuration_checks"].values())
+    return report
 
 
 def main() -> None:
