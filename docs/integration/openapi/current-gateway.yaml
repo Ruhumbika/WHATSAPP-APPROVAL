@@ -27,6 +27,29 @@ paths:
                 properties:
                   status: {type: string}
                   version: {type: string}
+  /api/integration-status:
+    get:
+      summary: Inspect current ERP onboarding configuration
+      description: |
+        Authenticated ERP only. Returns registered company scopes, callback
+        configuration checks and actor binding count. Never exposes API keys,
+        callback secrets, Meta tokens or ERP verification credentials.
+        integration_ready is deliberately false until independent live acceptance.
+      responses:
+        '200':
+          description: Safe configuration report (not live readiness proof)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  system: {type: string}
+                  configuration_checks: {type: object, additionalProperties: {type: boolean}}
+                  allowed_companies: {type: array, items: {type: string}}
+                  active_actor_binding_count: {type: integer}
+                  configuration_complete: {type: boolean}
+                  integration_ready: {type: boolean}
+        '401': {description: Invalid API key}
   /api/identity-links:
     post:
       summary: Start verification through the gateway-owned WhatsApp number
