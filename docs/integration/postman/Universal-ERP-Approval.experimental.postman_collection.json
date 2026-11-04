@@ -114,6 +114,39 @@
       ]
     },
     {
+      "name": "Revoke verified WhatsApp link (requires no pending approvals)",
+      "request": {
+        "method": "POST",
+        "url": "{{gateway_base_url}}/api/identity-links/{{actor_directory_uuid}}/revoke",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company\": \"{{company}}\",\n  \"source_user_id\": \"{{source_user_id}}\"\n}"
+        },
+        "description": "Destructive: only run after all pending approvals for the actor have been cancelled or resolved. Fresh LINK challenge from our WhatsApp number is required to relink."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Revocation confirms success', function () {pm.response.to.have.status(200);});",
+              "if(pm.response.code===200) {pm.expect(pm.response.json().status).to.eql('revoked');}"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "Create approval",
       "request": {
         "method": "POST",
