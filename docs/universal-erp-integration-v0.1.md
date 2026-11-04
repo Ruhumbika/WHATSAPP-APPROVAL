@@ -56,6 +56,15 @@ without another restart or maintenance operation. The maximum overlap is
 Revocation immediately disables both keys and erases any overlap. The new
 key is printed only once; deliver it securely and deploy it at the ERP.
 Keep overlap short, monitor adoption and coordinate the rotation.
+After the ERP confirms it has switched to the new key, close the overlap immediately:
+
+```bash
+python3 -m approval_gateway.manage_erp_credentials \\
+  --system external_erp --finish-rotation
+```
+
+The new key remains active; the previous key is rejected immediately.
+These commands require `--production-approved` in a production environment.
 
 This CLI does not rotate the separate callback HMAC secret or verification
 token; those require controlled operator changes. Customer-facing onboarding,
