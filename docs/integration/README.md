@@ -683,6 +683,21 @@ Idempotency-Key: decision:AGR-EXAMPLE123
 
 Compute HMAC SHA-256 with the registered ERP callback secret over `timestamp + "." + raw_body`, compare in constant time, and enforce the five-minute timestamp window (allowing at most 30 seconds of future clock skew). Check source company, assignment, current step and workflow version inside the ERP transaction; persist `event_id` in the same transaction. For a committed action return HTTP 200 with `{"event_id":"decision:AGR-EXAMPLE123","execution_status":"applied"}`. For a definitive refusal return matching `event_id` with `execution_status:"rejected"`. Plain HTTP 200 without this acknowledgment does **not** prove ERP execution.
 
+### Historical PETA Laravel integration practices
+
+The former local PETA patch notes contained the following **implementation patterns**, retained here as reference. They are **not instructions to overwrite currently deployed PETA controllers**. Verify existing ERP code, queue configuration and live migrations before modifying anything:
+
+- Dispatch the source workflow notification after the requisition transaction commits, e.g. `NotifyApprovalGateway::dispatch('requisition_approval', (string) $requisition->id)->afterCommit()` when the integration is enabled.
+- Ensure web and WhatsApp approval actions both use the same database row lock (typically Laravel `lockForUpdate()`) and perform the actual approval state change in a transaction. The ERP callback's receipt and business action must commit atomically.
+- ERP requisition detail responses should contain the authoritative record company, lifecycle status and closed state. Do not infer authorization from frontend display data.
+- A document preview must not mutate the printed flag: the existing print handler can use an optional `markPrinted` flag, while the integration-specific preview sets it to `false`. The document route must be authenticated with ERP integration credentials.
+- Trigger review of the next approval level only after a successful ERP action commits. Use a durable job queue rather than a synchronous request handler; supervise both the ERP queue worker and the gateway worker.
+- These PETA-specific controller and document-route patterns are **not** prerequisites for generic external ERP integrations. Generic ERPs own their own equivalent transactional enforcement and callback endpoints.
+
+### Retired proposed API contract
+
+The old `Approval_Gateway_API_Contract_v1.md` described **proposed** `/api/v1/*` routes, not working gateway endpoints. It has been retired to prevent accidental integration against unimplemented URLs. Use the implemented routes in this guide and the OpenAPI artifact.
+
 ## Troubleshooting and operational recovery
 
 | Symptom | Diagnose / correction |
