@@ -8,6 +8,28 @@ An operator creates an ERP integration, a gateway API credential, an HTTPS callb
 
 All custom ERP business logic stays on the ERP side. The gateway never needs ERP source access.
 
+## Operator onboarding (development branch)
+
+The CLI below generates a new API key and callback signing secret, and registers the
+ERP client plus its HTTPS callback atomically. It will **refuse to overwrite existing
+credentials**. Capture secrets in an approved secure vault, not chat, Git, or shell history.
+
+```bash
+python3 -m approval_gateway.provision_erp \\
+  --system external_erp \\
+  --callback-url https://erp.example.com/webhooks/whatsapp-approval
+```
+
+For `APP_ENV=production`, the operator must additionally supply
+`--production-approved`. This is a privileged server-side tool, **not** a
+public onboarding endpoint. It does not validate domain ownership, enroll actors,
+configure the workflow adapter, or activate WhatsApp delivery by itself.
+
+After provisioning, configure the generic adapter separately using the
+`INTEGRATIONS_CONFIG_PATH` file and verification credential as shown below.
+A controlled gateway/worker reload is required because adapters are loaded at
+process startup. This configuration is an operator responsibility in v0.1.
+
 ## Current gateway endpoints (unchanged)
 
 * `GET /health`
