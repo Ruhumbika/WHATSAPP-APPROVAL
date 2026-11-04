@@ -182,10 +182,12 @@ def receive(settings, response: dict) -> dict | None:
 
 def status(settings, key: str, identity: str, company: str) -> dict:
     """ERP polls a read-only scoped link status; no challenge token returned."""
-    company, identity, _, _ = _validate({
-        "company": company, "actor_directory_uuid": identity,
-        "source_user_id": "poll", "phone_number": "255700000001"
-    })
+    if not isinstance(company, str) or not company or len(company) > 200:
+        raise ServiceError("Invalid company.")
+    try:
+        identity = str(UUID(identity))
+    except (TypeError, ValueError, AttributeError):
+        raise ServiceError("Invalid Directory UUID.") from None
     with connection(settings) as conn:
         system = get_client(conn, key)["system_name"]
         _check_company_scope(conn, system, company)
