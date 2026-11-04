@@ -149,6 +149,20 @@ class IdentityLinkHTTPTests(unittest.TestCase):
             })[0], 201
         )
 
+    def test_external_erp_can_inspect_own_configuration_without_secrets(self):
+        code, report = self.fetch("GET", "/api/integration-status")
+        self.assertEqual(code, 200)
+        self.assertEqual(report["system"], "external")
+        self.assertEqual(report["allowed_companies"], ["14"])
+        self.assertTrue(report["configuration_checks"]["active_client"])
+        self.assertFalse(report["integration_ready"])
+        self.assertNotIn("gateway-key", json.dumps(report))
+        self.assertNotIn("meta-test-secret", json.dumps(report))
+        unauthenticated, _ = self.fetch(
+            "GET", "/api/integration-status", auth=False
+        )
+        self.assertEqual(unauthenticated, 401)
+
     def test_meta_signature_is_required_to_link(self):
         _, created = self.fetch("POST", "/api/identity-links", {
             "company": "14", "actor_directory_uuid": ACTOR,
