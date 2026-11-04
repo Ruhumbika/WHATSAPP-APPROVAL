@@ -179,6 +179,45 @@ class IdentityLinkTests(unittest.TestCase):
             )]
             self.assertEqual(events, ["linked", "revoked", "relinked"])
 
+    def test_pending_approval_must_be_cancelled_before_revocation(self):
+        from approval_gateway.integrations.permissions import WorkflowActor
+        from approval_gateway.service import create, cancel
+        challenge = start(self.settings, "external-key", self.data)
+        self.send(challenge["whatsapp_message"])
+        with connection(self.settings) as conn:
+            conn.execute(
+                "INSERT INTO integrations VALUES (?, ?, ?)",
+                ("external", "https://erp.example.com/callback", "s" * 32),
+            )
+        actor = WorkflowActor(
+            directory_uuid=UUID, source_user_id="7",
+            phone_number=PHONE, module_id="leave",
+            step_id="manager", record_digest="revision-1",
+        )
+        with patch("approval_gateway.integrations.generic.GenericWorkflowGuard.authorize",
+                   return_value=actor):
+            task, created = create(self.settings, "external-key", {
+                "source_system": "external", "company": "14",
+                "request_type": "leave_approval", "reference_id": "LEAVE-1",
+                "step_id": "manager", "workflow_version": "revision-1",
+                "actor_directory_uuid": UUID,
+                "message": "Please approve", "payload": {"employee_id": "7"},
+            })
+        self.assertTrue(created)
+        with self.assertRaises(ServiceError) as denied:
+            revoke(self.settings, "external-key", UUID, {
+                "company": "14", "source_user_id": "7",
+            })
+        self.assertEqual(denied.exception.status, 409)
+        self.assertTrue(status(self.settings, "external-key", UUID, "14")["verified"])
+        self.assertEqual(
+            cancel(self.settings, "external-key", task["gateway_reference_id"])["status"],
+            "cancelled",
+        )
+        self.assertEqual(revoke(self.settings, "external-key", UUID, {
+            "company": "14", "source_user_id": "7",
+        })["status"], "revoked")
+
     def test_wrong_source_user_cannot_revoke(self):
         challenge = start(self.settings, "external-key", self.data)
         self.send(challenge["whatsapp_message"])
