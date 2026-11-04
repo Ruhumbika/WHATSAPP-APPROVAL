@@ -30,13 +30,18 @@ def validate_callback_url(value: str) -> str:
     return value
 
 
-def provision(conn, system: str, callback_url: str) -> tuple[str, str]:
+def provision(conn, system: str, callback_url: str, companies: tuple[str, ...]) -> tuple[str, str]:
     if (not isinstance(system, str) or not system.isascii()
             or not 1 <= len(system) <= 80
             or not all(c.islower() or c.isdigit() or c in "_-" for c in system)
             or not system[0].isalpha()):
         raise ValueError("System must be a lowercase slug")
     callback_url = validate_callback_url(callback_url)
+    if not isinstance(companies, (tuple, list)) or not 1 <= len(companies) <= 100:
+        raise ValueError("At least one company scope is required")
+    if any(not isinstance(c, str) or not c.strip() or len(c) > 200
+           or c != c.strip() for c in companies) or len(set(companies)) != len(companies):
+        raise ValueError("Invalid or duplicate company scope")
     conn.execute("BEGIN IMMEDIATE")
     if conn.execute(
         "SELECT 1 FROM api_clients WHERE system_name = ?", (system,)
@@ -52,6 +57,10 @@ def provision(conn, system: str, callback_url: str) -> tuple[str, str]:
         "VALUES (?, ?, ?)",
         (system, callback_url, callback_secret),
     )
+    conn.executemany(
+        "INSERT INTO integration_company_scopes (system_name, company) VALUES (?, ?)",
+        [(system, company) for company in companies],
+    )
     return api_key, callback_secret
 
 
@@ -59,6 +68,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--system", required=True)
     parser.add_argument("--callback-url", required=True)
+    parser.add_argument("--company", action="append", required=True,
+                        help="Explicit permitted ERP company scope; repeat for more.")
     args = parser.parse_args()
     settings = load_settings()
     if settings.app_env == "production":
@@ -71,10 +82,11 @@ def main() -> None:
     migrate(settings)
     try:
         with connection(settings) as conn:
-            key, secret = provision(conn, args.system, args.callback_url)
+            key, secret = provision(conn, args.system, args.callback_url, tuple(args.company))
     except ValueError as exc:
         parser.error(str(exc))
     print("System:", args.system)
+    print("Allowed companies:", ", ".join(args.company))
     print("Gateway API key (save now):", key)
     print("Callback signing secret (save now):", secret)
     print("Verification endpoint, verified actor bindings and adapter registration "
