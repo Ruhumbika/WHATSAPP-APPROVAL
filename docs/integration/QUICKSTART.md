@@ -5,6 +5,14 @@
 > never needs a Meta account, WhatsApp access token, phone number ID, Meta app,
 > or Meta webhook. All WhatsApp interaction runs on OUR Business number.
 
+## Developer sandbox status
+
+An isolated **local-only dry-run sandbox** is available for operator and
+developer contract work: [Local Sandbox Guide](LOCAL-SANDBOX.md).
+It creates separate test credentials, database and loopback configuration.
+It does not send real WhatsApp messages or automatically stand up an ERP.
+It is **not** yet the externally hosted self-service developer sandbox.
+
 ## Who builds what?
 
 | Gateway operator (us) | ERP developer |
