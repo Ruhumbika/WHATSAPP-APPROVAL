@@ -167,6 +167,12 @@ A completed phone verification is tracked using `verified_at`, distinct
 from `consumed_at` (which also records invalidated challenges). This avoids
 mistaking a cancelled code for proof of WhatsApp phone ownership.
 
+**Security enforcement:** Generic ERP approval creation now requires the
+gateway's current successful LINK proof and latest identity-link audit event.
+An operator-entered `actor_bindings` record, a claimed ERP phone number or
+a historical LINK event that was subsequently revoked does not authorize a
+new generic approval. The source ERP must still validate workflow permissions.
+
 This verifies *control of the WhatsApp account that sent the message*, not
 independently the real-world identity, HR employment or current ERP permission.
 The ERP must authenticate the requesting employee and independently authorize
