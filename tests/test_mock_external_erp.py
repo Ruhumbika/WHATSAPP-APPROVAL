@@ -50,6 +50,19 @@ class MockERPContractTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM processed_events").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT state FROM records").fetchone()[0], "approved")
 
+    def test_conflicting_replay_does_not_reexecute(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            self.assertEqual(module.apply_decision(conn, self.decision)["execution_status"], "applied")
+        altered = dict(self.decision, status="rejected")
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            with self.assertRaises(ValueError):
+                module.apply_decision(conn, altered)
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(conn.execute("SELECT state FROM records").fetchone()[0], "approved")
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM processed_events").fetchone()[0], 1)
+
     def test_wrong_company_never_executes(self):
         self.decision["company"] = "99"
         with sqlite3.connect(self.db_path) as conn:
