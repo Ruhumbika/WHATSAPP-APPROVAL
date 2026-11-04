@@ -345,6 +345,11 @@ def _prepare_task(
     if "_gateway_workflow" in data["payload"]:
         raise ServiceError("payload._gateway_workflow is reserved.")
     actor = _authorize_workflow(system, data)
+    # A generic ERP's version must describe exactly the snapshot it verifies.
+    from .integrations.generic import GenericWorkflowGuard
+    if isinstance(get_workflow_guard(system), GenericWorkflowGuard):
+        if actor.record_digest != data["workflow_version"]:
+            raise ServiceError("ERP workflow digest and version differ.", 409)
     data["payload"]["_gateway_workflow"] = _workflow_evidence(actor)
     return data, actor
 
