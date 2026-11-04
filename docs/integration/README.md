@@ -696,7 +696,7 @@ The former local PETA patch notes contained the following **implementation patte
 
 ### Retired proposed API contract
 
-The old `Approval_Gateway_API_Contract_v1.md` described **proposed** `/api/v1/*` routes, not working gateway endpoints. It has been retired to prevent accidental integration against unimplemented URLs. Use the implemented routes in this guide and the OpenAPI artifact.
+An earlier, now-retired specification described **proposed** `/api/v1/*` routes, not working gateway endpoints. It has been retired to prevent accidental integration against unimplemented URLs. Use the implemented routes in this guide and the OpenAPI artifact.
 
 ## Troubleshooting and operational recovery
 
