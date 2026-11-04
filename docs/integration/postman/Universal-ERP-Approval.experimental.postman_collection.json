@@ -1,0 +1,121 @@
+{
+  "info": {
+    "name": "WhatsApp Approval Gateway - Generic ERP Developer (experimental)",
+    "description": "Uses existing gateway endpoints; generic ERP authorization adapter required on server. Not production-ready onboarding.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "gateway_base_url",
+      "value": "http://127.0.0.1:8089"
+    },
+    {
+      "key": "gateway_api_key",
+      "value": ""
+    },
+    {
+      "key": "gateway_reference_id",
+      "value": "AGR-REPLACE"
+    },
+    {
+      "key": "source_system",
+      "value": "ghrm"
+    },
+    {
+      "key": "company",
+      "value": "14"
+    },
+    {
+      "key": "actor_directory_uuid",
+      "value": "0656c52c-970d-11f1-b365-6805cae19a58"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{gateway_base_url}}/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Gateway reachable', function () {pm.response.to.have.status(200);});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create approval",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{gateway_base_url}}/api/approval-requests",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source_system\": \"{{source_system}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"leave_approval\",\n  \"reference_id\": \"LEAVE-2026-001\",\n  \"step_id\": \"manager\",\n  \"workflow_version\": \"record-v1\",\n  \"actor_directory_uuid\": \"{{actor_directory_uuid}}\",\n  \"message\": \"Leave request requires review\",\n  \"idempotency_key\": \"ghrm-LEAVE-2026-001-manager-record-v1\",\n  \"payload\": {\n    \"employee_id\": \"7\",\n    \"leave_days\": 5\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Created or idempotent replay', function () {pm.expect([200,201]).to.include(pm.response.code);});",
+              "if ([200,201].includes(pm.response.code)) { const data = pm.response.json(); pm.expect(data).to.have.property('approval_request'); pm.environment.set('gateway_reference_id', data.approval_request.gateway_reference_id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get approval status",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          }
+        ],
+        "url": "{{gateway_base_url}}/api/approval-requests/{{gateway_reference_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status accessible', function () {pm.response.to.have.status(200);});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cancel pending approval (destructive to pending task)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          }
+        ],
+        "url": "{{gateway_base_url}}/api/approval-requests/{{gateway_reference_id}}/cancel"
+      },
+      "description": "Only run intentionally: cancels an existing pending approval."
+    }
+  ]
+}
