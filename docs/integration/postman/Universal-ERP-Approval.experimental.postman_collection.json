@@ -57,6 +57,31 @@
       ]
     },
     {
+      "name": "Check onboarding configuration (no secrets)",
+      "request": {
+        "method": "GET",
+        "url": "{{gateway_base_url}}/api/integration-status",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          }
+        ],
+        "description": "ERP-scoped configuration details only. Does not claim production acceptance."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Authenticated integration status accessible', function () {pm.response.to.have.status(200);});",
+              "if(pm.response.code===200) {const d=pm.response.json();pm.expect(d).to.have.property('integration_ready',false);}"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "Start WhatsApp phone link (our gateway WhatsApp number)",
       "request": {
         "method": "POST",
