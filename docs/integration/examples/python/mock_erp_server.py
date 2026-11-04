@@ -34,7 +34,8 @@ def init_store(path: str) -> None:
             );
             CREATE TABLE IF NOT EXISTS processed_events (
                 event_id TEXT PRIMARY KEY,
-                result TEXT NOT NULL
+                result TEXT NOT NULL,
+                event_hash TEXT NOT NULL
             );
         """)
         conn.execute(
@@ -89,11 +90,17 @@ def apply_decision(conn, event: dict) -> dict:
     event_id = event.get("event_id")
     if not isinstance(event_id, str) or not event_id.startswith("decision:"):
         raise ValueError("Invalid event identity")
+    event_hash = hashlib.sha256(
+        json.dumps(event, sort_keys=True, separators=(",", ":"),
+                   allow_nan=False).encode()
+    ).hexdigest()
     conn.execute("BEGIN IMMEDIATE")
     saved = conn.execute(
-        "SELECT result FROM processed_events WHERE event_id=?", (event_id,)
+        "SELECT result,event_hash FROM processed_events WHERE event_id=?", (event_id,)
     ).fetchone()
     if saved:
+        if saved["event_hash"] != event_hash:
+            raise ValueError("Conflicting replay for event identity")
         return {"event_id": event_id, "execution_status": saved["result"]}
     actor = event.get("actor")
     row = conn.execute(
@@ -118,8 +125,8 @@ def apply_decision(conn, event: dict) -> dict:
             (event["status"], event["reference_id"]),
         )
     conn.execute(
-        "INSERT INTO processed_events (event_id,result) VALUES (?,?)",
-        (event_id, result),
+        "INSERT INTO processed_events (event_id,result,event_hash) VALUES (?,?,?)",
+        (event_id, result, event_hash),
     )
     return {"event_id": event_id, "execution_status": result}
 
