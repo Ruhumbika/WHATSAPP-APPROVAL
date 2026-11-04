@@ -62,8 +62,10 @@ def start(settings, key: str, data: dict) -> dict:
             "SELECT * FROM actor_bindings WHERE system_name=? AND company=? AND directory_uuid=?",
             (system, company, identity),
         ).fetchone()
-        if existing is not None:
-            raise ServiceError("Identity binding already exists; use reviewed reassignment.", 409)
+        if existing is not None and existing["active"] == 1:
+            raise ServiceError("Active identity binding already exists; revoke it first.", 409)
+        # A disabled binding can only be reactivated by a fresh proof of
+        # possession from the target phone. Do not mutate existing records here.
         # An active phone belonging to another Directory identity is ambiguous.
         conflict = conn.execute(
             """SELECT 1 FROM actor_bindings b
@@ -153,11 +155,12 @@ def receive(settings, response: dict) -> dict | None:
         if client is None or client["active"] != 1:
             return {"processed": False, "reason": "inactive_integration"}
         _check_company_scope(conn, item["system_name"], item["company"])
-        if conn.execute(
-            """SELECT 1 FROM actor_bindings
+        old_binding = conn.execute(
+            """SELECT * FROM actor_bindings
                WHERE system_name=? AND company=? AND directory_uuid=?""",
             (item["system_name"], item["company"], item["directory_uuid"]),
-        ).fetchone():
+        ).fetchone()
+        if old_binding is not None and old_binding["active"] == 1:
             return {"processed": False, "reason": "identity_already_bound"}
         if conn.execute(
             """SELECT 1 FROM actor_bindings b
@@ -174,12 +177,29 @@ def receive(settings, response: dict) -> dict | None:
             (item["system_name"] + ":" + item["source_user_id"],
              "verified_workflow_actor", item["company"], phone, now, now),
         )
+        if old_binding is None:
+            conn.execute(
+                """INSERT INTO actor_bindings
+                   (system_name,company,directory_uuid,source_user_id,approver_id,active)
+                   VALUES (?,?,?,?,?,1)""",
+                (item["system_name"], item["company"], item["directory_uuid"],
+                 item["source_user_id"], cursor.lastrowid),
+            )
+            event_type = "linked"
+        else:
+            conn.execute(
+                """UPDATE actor_bindings SET source_user_id=?,approver_id=?,active=1
+                   WHERE id=? AND active=0""",
+                (item["source_user_id"], cursor.lastrowid, old_binding["id"]),
+            )
+            event_type = "relinked"
         conn.execute(
-            """INSERT INTO actor_bindings
-               (system_name,company,directory_uuid,source_user_id,approver_id,active)
-               VALUES (?,?,?,?,?,1)""",
+            """INSERT INTO identity_link_events
+               (system_name,company,directory_uuid,source_user_id,
+                approver_id,phone_number,event_type,created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (item["system_name"], item["company"], item["directory_uuid"],
-             item["source_user_id"], cursor.lastrowid),
+             item["source_user_id"], cursor.lastrowid, phone, event_type, now),
         )
         conn.execute(
             "UPDATE identity_link_challenges SET consumed_at=?, verified_at=? WHERE id=? AND consumed_at IS NULL",
@@ -224,3 +244,76 @@ def status(settings, key: str, identity: str, company: str) -> dict:
             (system, company, identity),
         ).fetchone()
         return {"verified": binding is not None, "company": company, "actor_directory_uuid": identity}
+
+
+def revoke(settings, key: str, identity: str, data: dict) -> dict:
+    """ERP revokes one existing link; pending tasks must be cancelled first.
+
+    No binding is deleted; historical tasks and prior audit records survive.
+    A future re-link requires a fresh signed WhatsApp phone-possession proof.
+    """
+    if not isinstance(data, dict) or set(data) != {"company", "source_user_id"}:
+        raise ServiceError("Provide company and source_user_id.")
+    company, source_user = data["company"], data["source_user_id"]
+    if any(not isinstance(value, str) or not value or len(value) > 200
+           or value != value.strip() for value in (company, source_user)):
+        raise ServiceError("Invalid company or source user.")
+    try:
+        identity = str(UUID(identity))
+    except (TypeError, ValueError, AttributeError):
+        raise ServiceError("Invalid Directory UUID.") from None
+    with connection(settings) as conn:
+        system = get_client(conn, key)["system_name"]
+        try:
+            generic = isinstance(get_workflow_guard(system), GenericWorkflowGuard)
+        except IntegrationUnavailable:
+            generic = False
+        if not generic:
+            raise ServiceError("Link revocation requires a configured generic ERP.", 403)
+        _check_company_scope(conn, system, company)
+        conn.execute("BEGIN IMMEDIATE")
+        if get_client(conn, key)["system_name"] != system:
+            raise ServiceError("ERP credentials changed.", 403)
+        _check_company_scope(conn, system, company)
+        binding = conn.execute(
+            """SELECT b.*,a.phone_number FROM actor_bindings b
+               JOIN approvers a ON a.id=b.approver_id
+               WHERE b.system_name=? AND b.company=? AND b.directory_uuid=?""",
+            (system, company, identity),
+        ).fetchone()
+        if binding is None or binding["active"] != 1:
+            raise ServiceError("Active verified binding not found.", 404)
+        if binding["source_user_id"] != source_user:
+            raise ServiceError("Source actor identity mismatch.", 403)
+        # Explicit cancellation from the ERP must precede revocation.
+        # This avoids orphaned approvals that users can no longer act on.
+        pending = conn.execute(
+            """SELECT 1 FROM approval_requests
+               WHERE source_system=? AND company=? AND actor_directory_uuid=?
+                 AND status='pending' LIMIT 1""",
+            (system, company, identity),
+        ).fetchone()
+        if pending:
+            raise ServiceError(
+                "Cancel pending approval requests before revoking this link.", 409
+            )
+        now = utc_now()
+        conn.execute(
+            "UPDATE actor_bindings SET active=0 WHERE id=? AND active=1",
+            (binding["id"],),
+        )
+        conn.execute(
+            """UPDATE identity_link_challenges SET consumed_at=?
+               WHERE system_name=? AND company=? AND directory_uuid=?
+                 AND consumed_at IS NULL""",
+            (now, system, company, identity),
+        )
+        conn.execute(
+            """INSERT INTO identity_link_events
+               (system_name,company,directory_uuid,source_user_id,
+                approver_id,phone_number,event_type,created_at)
+               VALUES (?,?,?,?,?,?,'revoked',?)""",
+            (system, company, identity, source_user, binding["approver_id"],
+             binding["phone_number"], now),
+        )
+    return {"status": "revoked", "actor_directory_uuid": identity, "company": company}
