@@ -11,12 +11,13 @@ All custom ERP business logic stays on the ERP side. The gateway never needs ERP
 ## Operator onboarding (development branch)
 
 The CLI below generates a new API key and callback signing secret, and registers the
-ERP client plus its HTTPS callback atomically. It will **refuse to overwrite existing
+ERP client, explicitly allowed company scopes, plus its HTTPS callback atomically. It will **refuse to overwrite existing
 credentials**. Capture secrets in an approved secure vault, not chat, Git, or shell history.
 
 ```bash
 python3 -m approval_gateway.provision_erp \\
   --system external_erp \\
+  --company 14 \\
   --callback-url https://erp.example.com/webhooks/whatsapp-approval
 ```
 
@@ -77,7 +78,7 @@ Return HTTP 200:
 * Return `403`, `409`, `422` or `{"authorized":false}` on denied/stale actions.
 * A timeout, invalid response or server error blocks the decision; never approve by fallback.
 * `record_digest` must change when the material workflow record, assignments or item scope change.
-* Verified identity and gateway actor binding must exist separately; a phone asserted by an ERP is **not sufficient proof of phone ownership**.
+* Verified identity and gateway actor binding must exist separately; a phone asserted by an ERP is **not sufficient proof of phone ownership**. For generic ERP integrations the gateway now rejects missing actor bindings or changed phones, rather than automatically trusting the ERP assertion. Identity enrollment itself is not yet a self-service capability.
 * The verification endpoint is called both on intake and at decision time. It must be safe to call repeatedly and cannot mutate the ERP record.
 
 ### Configure adapter (operator)
