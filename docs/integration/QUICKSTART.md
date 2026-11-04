@@ -56,6 +56,22 @@ with the exact parameter/button layout. Automated dry-run tests cannot prove
 Meta template approval or production delivery. ERP customers do not configure
 or purchase templates themselves.
 
+## ERP self-check before testing
+
+An ERP developer can verify which parts of its onboarding are configured
+using only its issued gateway API key:
+
+```http
+GET /api/integration-status
+Authorization: Bearer <GATEWAY_API_KEY>
+```
+
+The response includes company scopes, active client state, callback presence
+and active actor binding count. Secrets and Meta credentials are omitted.
+`configuration_complete` is not proof of WhatsApp delivery or ERP execution.
+`integration_ready` remains false until an independent live acceptance
+process has validated the entire approval lifecycle.
+
 ## ERP developer implementation
 
 **1. Authenticate your employee inside your ERP.** Identify your local
