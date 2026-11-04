@@ -48,6 +48,7 @@ class UniversalContractFlowTests(unittest.TestCase):
         self.step = "manager"
         self.digest = "revision-1"
         self.callback_calls = 0
+        self.verified_versions = []
         self.guard = GenericWorkflowGuard("https://external.example.com/verify", "v" * 32)
         configure_workflow_guards({"external": self.guard})
         self.addCleanup(lambda: configure_workflow_guards({}))
@@ -66,6 +67,7 @@ class UniversalContractFlowTests(unittest.TestCase):
         url = request.full_url
         if url.endswith("/verify"):
             data = json.loads(request.data)
+            self.verified_versions.append(data.get("workflow_version"))
             if data.get("step_id") != self.step:
                 return HttpReply({"authorized": False})
             return HttpReply({"authorized": True, "actor": {
@@ -95,6 +97,28 @@ class UniversalContractFlowTests(unittest.TestCase):
             "actor_directory_uuid": ACTOR, "message": "Please review",
             "payload": {"employee_id": "7"},
         })
+
+    def test_changed_record_digest_blocks_decision(self):
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            task, created = self.create_task()
+            self.assertTrue(created)
+            self.digest = "revision-2"
+            with self.assertRaises(ServiceError) as error:
+                decide(self.settings, {
+                    "action": "approved", "reference": task["gateway_reference_id"],
+                    "phone": "255700000001", "message_id": "stale-record",
+                    "text": "Approve", "context_id": None,
+                })
+            self.assertEqual(error.exception.status, 409)
+            self.assertEqual(self.verified_versions, ["revision-1", "revision-1"])
+        with connection(self.settings) as conn:
+            task_state = conn.execute(
+                "SELECT status, execution_status FROM approval_requests WHERE id=?",
+                (task["id"],),
+            ).fetchone()
+            self.assertEqual(task_state["status"], "pending")
+            self.assertEqual(task_state["execution_status"], "not_requested")
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM callback_attempts").fetchone()[0], 0)
 
     def test_create_decide_signed_callback_and_confirmation(self):
         with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
