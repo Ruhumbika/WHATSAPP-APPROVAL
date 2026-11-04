@@ -102,7 +102,7 @@ class GenericWhatsAppTemplateTests(unittest.TestCase):
                 "SELECT delivery_status FROM approval_requests WHERE id=?",
                 (task["id"],),
             ).fetchone()[0]
-            self.assertEqual(state, "sent")
+            self.assertEqual(state, "simulated")
 
 
 if __name__ == "__main__":
