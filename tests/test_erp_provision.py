@@ -21,10 +21,14 @@ class ErpProvisionTests(unittest.TestCase):
                 system_name TEXT PRIMARY KEY, callback_url TEXT NOT NULL,
                 callback_secret TEXT NOT NULL
             );
+            CREATE TABLE integration_company_scopes (
+                system_name TEXT NOT NULL, company TEXT NOT NULL,
+                PRIMARY KEY (system_name, company)
+            );
         """)
 
     def test_provisions_credentials_and_callback(self):
-        key, secret = provision(self.conn, "new_erp", "https://erp.example.com/callback")
+        key, secret = provision(self.conn, "new_erp", "https://erp.example.com/callback", ("14",))
         self.assertTrue(key.startswith("wha_"))
         self.assertGreaterEqual(len(secret), 32)
         client = self.conn.execute(
@@ -36,12 +40,14 @@ class ErpProvisionTests(unittest.TestCase):
             "SELECT * FROM integrations WHERE system_name='new_erp'"
         ).fetchone()
         self.assertEqual(integration["callback_secret"], secret)
+        scope = self.conn.execute("SELECT company FROM integration_company_scopes WHERE system_name=?", ("new_erp",)).fetchone()
+        self.assertEqual(scope["company"], "14")
 
     def test_refuses_duplicate_without_rotating(self):
-        key, _ = provision(self.conn, "external", "https://erp.example.com/callback")
+        key, _ = provision(self.conn, "external", "https://erp.example.com/callback", ("14",))
         self.conn.commit()
         with self.assertRaises(ValueError):
-            provision(self.conn, "external", "https://erp.example.com/other")
+            provision(self.conn, "external", "https://erp.example.com/other", ("14",))
         client = self.conn.execute(
             "SELECT * FROM api_clients WHERE system_name='external'"
         ).fetchone()
@@ -58,10 +64,15 @@ class ErpProvisionTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 validate_callback_url(url)
 
+    def test_rejects_missing_or_duplicate_scopes(self):
+        for companies in ((), ("14", "14"), (" ",), ("14 ",)):
+            with self.subTest(companies=companies), self.assertRaises(ValueError):
+                provision(self.conn, "new_erp", "https://erp.example.com/callback", companies)
+
     def test_refuses_bad_system_identifier(self):
         for system in ("", "PETA", "../erp", "new erp", "4erp"):
             with self.subTest(system=system), self.assertRaises(ValueError):
-                provision(self.conn, system, "https://erp.example.com/callback")
+                provision(self.conn, system, "https://erp.example.com/callback", ("14",))
 
 
 if __name__ == "__main__":
