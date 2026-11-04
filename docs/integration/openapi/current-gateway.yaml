@@ -27,6 +27,74 @@ paths:
                 properties:
                   status: {type: string}
                   version: {type: string}
+  /api/identity-links:
+    post:
+      summary: Start verification through the gateway-owned WhatsApp number
+      description: |
+        The ERP's authenticated backend attests its employee account and
+        requests a short-lived one-time LINK code. The user sends the code
+        to the provider's existing WhatsApp number. No Meta credentials
+        or WhatsApp webhook are needed by the ERP.
+        Link enrollment requires a configured generic ERP with company scopes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [company, actor_directory_uuid, source_user_id, phone_number]
+              properties:
+                company: {type: string, example: '14'}
+                actor_directory_uuid: {type: string, format: uuid}
+                source_user_id: {type: string, example: '7'}
+                phone_number: {type: string, example: '255700000001'}
+      responses:
+        '201':
+          description: Challenge created; display the code to authenticated ERP user only
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: pending_phone_verification}
+                  expires_at: {type: string, format: date-time}
+                  whatsapp_message: {type: string, description: Secret one-time LINK code}
+                  instruction: {type: string}
+        '400': {description: Invalid identity data}
+        '401': {description: Invalid gateway API key}
+        '403': {description: Unauthorized ERP or company}
+        '409': {description: Existing binding or conflicting number}
+        '429': {description: Link challenge rate limit exceeded}
+  /api/identity-links/{directory_uuid}:
+    parameters:
+      - name: directory_uuid
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: company
+        in: query
+        required: true
+        schema: {type: string}
+    get:
+      summary: Poll WhatsApp phone-possession proof
+      description: |
+        Returns verified=true only when a one-time challenge was consumed
+        through the gateway's signature-verified WhatsApp webhook, and its
+        actor binding is still active. Not proof of employment or ERP permission.
+      responses:
+        '200':
+          description: Scoped verification state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verified: {type: boolean}
+                  company: {type: string}
+                  actor_directory_uuid: {type: string, format: uuid}
+        '401': {description: Invalid gateway API key}
+        '403': {description: Unconfigured integration or unauthorized company}
   /api/approval-requests:
     post:
       summary: Create one approval task
