@@ -66,6 +66,23 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS integration_callback_secret_staging (
+        system_name TEXT PRIMARY KEY REFERENCES integrations(system_name),
+        next_secret TEXT NOT NULL,
+        staged_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS integration_callback_secret_events (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL REFERENCES integrations(system_name),
+        event_type TEXT NOT NULL CHECK (
+            event_type IN ('secret_staged','secret_activated','secret_aborted')
+        ),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS integration_webhook_events (
         id INTEGER PRIMARY KEY,
         system_name TEXT NOT NULL REFERENCES api_clients(system_name),
