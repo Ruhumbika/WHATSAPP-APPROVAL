@@ -99,6 +99,25 @@ _SCHEMA_STATEMENTS = (
         ON identity_link_challenges(system_name,company,directory_uuid)
     """,
     """
+    CREATE TABLE IF NOT EXISTS identity_link_events (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL,
+        company TEXT NOT NULL,
+        directory_uuid TEXT NOT NULL,
+        source_user_id TEXT NOT NULL,
+        approver_id INTEGER,
+        phone_number TEXT,
+        event_type TEXT NOT NULL CHECK (
+            event_type IN ('linked', 'revoked', 'relinked')
+        ),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_identity_link_events_scope
+        ON identity_link_events(system_name,company,directory_uuid,id)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS actor_bindings (
         id INTEGER PRIMARY KEY,
         system_name TEXT NOT NULL
