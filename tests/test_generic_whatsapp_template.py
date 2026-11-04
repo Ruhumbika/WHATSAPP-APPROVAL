@@ -70,6 +70,36 @@ class GenericWhatsAppTemplateTests(unittest.TestCase):
         )
         self.assertEqual(result, "dry-run-AGR-AABBCC")
 
+    def test_provider_owned_meta_template_payload_has_two_buttons(self):
+        settings = replace(self.settings, dry_run_whatsapp=False)
+        client = WhatsAppClient(settings)
+        captured = {}
+
+        def fake_post_graph(payload, **kwargs):
+            captured.update(payload)
+            return {"messages": [{"id": "wamid.provider.whatsapp"}]}
+
+        with patch.object(client, "_post_graph", side_effect=fake_post_graph):
+            result = client.send_approval_request(
+                "255700000001", "14", "Review leave",
+                "AGR-ABCD1234", {},
+                template_name="approval_request",
+            )
+        self.assertEqual(result, "wamid.provider.whatsapp")
+        self.assertEqual(captured["messaging_product"], "whatsapp")
+        self.assertEqual(captured["to"], "255700000001")
+        self.assertEqual(captured["template"]["name"], "approval_request")
+        body = next(x for x in captured["template"]["components"] if x["type"] == "body")
+        self.assertEqual(
+            [x["text"] for x in body["parameters"]],
+            ["14", "Review leave"],
+        )
+        buttons = [x for x in captured["template"]["components"] if x["type"] == "button"]
+        self.assertEqual(
+            [x["parameters"][0]["payload"] for x in buttons],
+            ["approve_AGR-ABCD1234", "reject_AGR-ABCD1234"],
+        )
+
     def test_worker_selects_generic_template(self):
         actor = WorkflowActor(
             directory_uuid=ACTOR, source_user_id="7",
