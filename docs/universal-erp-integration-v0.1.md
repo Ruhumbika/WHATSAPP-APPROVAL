@@ -70,6 +70,39 @@ This CLI does not rotate the separate callback HMAC secret or verification
 token; those require controlled operator changes. Customer-facing onboarding,
 webhook updates and live end-to-end acceptance remain release gates.
 
+## Two-phase ERP decision webhook signing-secret rotation
+
+Our gateway uses its own WhatsApp account, but signs outgoing ERP decision
+webhooks with a **separate per-integration callback HMAC secret**. To rotate
+that secret without making the ERP reject our callbacks:
+
+1. Operator stages a new secret; the current secret remains in use.
+2. ERP developer configures their server to verify either current or staged
+   secret using the same timestamp-and-body HMAC contract. Store both securely.
+3. Operator activates the staged secret. Gateway signs subsequent callback
+   attempts with the new value, including retries.
+4. After observing successful callback delivery, ERP developer removes the old
+   secret. The gateway never exposes Meta or WhatsApp provider credentials.
+
+```bash
+python3 -m approval_gateway.manage_callback_secret \\
+  --system external_erp --stage
+
+# ONLY after the ERP receiver accepts both secrets:
+python3 -m approval_gateway.manage_callback_secret \\
+  --system external_erp --activate
+
+# Or, if rollout was cancelled prior to activation:
+python3 -m approval_gateway.manage_callback_secret \\
+  --system external_erp --abort
+```
+
+Use `--production-approved` for production changes. The staged secret is
+printed once. The backend stores the pending secret privately until activation
+or abort, and audit events do not reveal it. **There is no automatic
+receiver-readiness verification**: the operator must coordinate this change
+with the ERP developer and verify signed callbacks in sandbox first.
+
 ## Updating the registered ERP webhook receiver
 
 The operator can change the registered HTTPS callback destination without
