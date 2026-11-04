@@ -1,0 +1,168 @@
+openapi: 3.0.3
+info:
+  title: WhatsApp Approval Gateway — Existing API (Experimental Generic ERP Contract)
+  version: 0.1.0
+  description: |
+    Documents the existing /api/approval-requests HTTP routes. The generic
+    adapter is opt-in and requires operator provisioning, an external ERP
+    verification endpoint, preverified actors and signed callback receiver.
+    This is not the proposed /v1/approvals API.
+servers:
+  - url: https://gateway.example.com
+    description: Replace with your deployed gateway base URL
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Gateway health
+      security: []
+      responses:
+        '200':
+          description: Service reachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string}
+                  version: {type: string}
+  /api/approval-requests:
+    post:
+      summary: Create one approval task
+      description: |
+        Requires a registered active ERP client, authorized company scope and
+        an ERP adapter. For generic ERP integrations, the verification endpoint
+        must approve current workflow state and actor binding must already exist.
+        Idempotent replays return the original task.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateApproval'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreateResponse'}
+        '200':
+          description: Existing identical task returned
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreateResponse'}
+        '400': {description: Invalid request}
+        '401': {description: Invalid API key}
+        '403': {description: Unauthorized company, actor or workflow}
+        '409': {description: Stale or conflicting task}
+        '503': {description: ERP workflow verification unavailable}
+  /api/approval-requests/{reference}:
+    parameters:
+      - $ref: '#/components/parameters/Reference'
+    get:
+      summary: Read request scoped to the authenticated ERP
+      responses:
+        '200':
+          description: Approval status and audit data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval_request]
+                properties:
+                  approval_request: {type: object, additionalProperties: true}
+        '401': {description: Invalid API key}
+        '403': {description: Company scope unauthorized}
+        '404': {description: Request not found within source ERP}
+  /api/approval-requests/{reference}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/Reference'
+    post:
+      summary: Cancel a pending approval task
+      responses:
+        '200':
+          description: Cancellation or expiry outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, enum: [cancelled, expired]}
+        '401': {description: Invalid API key}
+        '403': {description: Company scope unauthorized}
+        '404': {description: Request not found within source ERP}
+        '409': {description: Request is not pending}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Backend-only ERP API key; never expose to a browser.
+  parameters:
+    Reference:
+      name: reference
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^AGR-[A-Z0-9]{1,96}$'
+  schemas:
+    CreateApproval:
+      type: object
+      additionalProperties: false
+      required:
+        - company
+        - request_type
+        - reference_id
+        - message
+        - step_id
+        - workflow_version
+        - actor_directory_uuid
+      properties:
+        source_system:
+          type: string
+          description: If present, must match authenticated ERP client
+        company:
+          type: string
+          example: '14'
+        request_type:
+          type: string
+          example: leave_approval
+        reference_id:
+          type: string
+          example: LEAVE-2026-001
+        message:
+          type: string
+          example: Please review leave request
+        step_id:
+          type: string
+          example: manager
+        workflow_version:
+          type: string
+          example: record-v1
+        actor_directory_uuid:
+          type: string
+          format: uuid
+        idempotency_key:
+          type: string
+        callback_url:
+          type: string
+          description: Optional only if equal to the already registered callback URL
+        amount:
+          oneOf:
+            - {type: number, minimum: 0}
+            - {type: string}
+        payload:
+          type: object
+          additionalProperties: true
+          description: JSON metadata; _gateway_workflow is a reserved key
+    CreateResponse:
+      type: object
+      required: [approval_request, created]
+      properties:
+        approval_request:
+          type: object
+          additionalProperties: true
+        created:
+          type: boolean
