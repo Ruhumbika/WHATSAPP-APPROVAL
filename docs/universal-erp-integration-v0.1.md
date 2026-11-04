@@ -67,6 +67,54 @@ configuration alone cannot prove WhatsApp phone ownership, real Meta delivery,
 authorized ERP business execution or webhook deduplication. External acceptance
 tests are mandatory before a customer is marked production ready.
 
+## WhatsApp is provided exclusively by our gateway
+
+**External ERP developers do not need a Meta app, WABA, phone-number ID,
+WhatsApp Cloud API token, Meta templates or Meta webhooks.** All WhatsApp
+messages use the gateway's own business number, templates, verified Meta
+webhook and delivery worker. ERP systems integrate only with our HTTPS API,
+ERP verification endpoint and signed decision callback.
+
+### Phone link onboarding (development branch, not production enabled)
+
+1. The ERP signs in its own employee using its existing authentication. The
+   ERP backend attests the selected Directory UUID and ERP local user ID.
+2. ERP backend calls **POST /api/identity-links** with its gateway API key:
+
+```json
+{
+  "company": "14",
+  "actor_directory_uuid": "0656c52c-970d-11f1-b365-6805cae19a58",
+  "source_user_id": "7",
+  "phone_number": "255700000001"
+}
+```
+
+3. The gateway responds HTTP 201 with `status`,
+   `expires_at`, `whatsapp_message` and `instruction`. The
+   `whatsapp_message` is a high-entropy, one-time text challenge; the ERP
+   displays it ONLY to its authenticated user. The code expires after ten
+   minutes.
+4. That user sends the exact `LINK ...` message **from the requested phone
+   to our existing WhatsApp business number**. The gateway validates the Meta
+   webhook signature and receiving number before processing it. A different
+   phone, reused token, disabled ERP or wrong company is rejected.
+5. The ERP can check **GET
+   /api/identity-links/{actor_directory_uuid}?company=14** with its gateway
+   API key. No Meta API interaction is required by the ERP.
+
+This verifies *control of the WhatsApp account that sent the message*, not
+independently the real-world identity, HR employment or current ERP permission.
+The ERP must authenticate the requesting employee and independently authorize
+the actor, company and workflow step at creation and at decision time.
+Other linked Directory identities cannot silently take over the same number.
+Changing an existing binding requires a separate reviewed revocation/re-link
+procedure; the current endpoint intentionally refuses reassignment.
+
+The phone-linking API currently has no comprehensive per-ERP issuance rate
+limits, staff self-service revocation or live-Meta integration acceptance; do
+not enable it on production without addressing these release gates.
+
 ## Current gateway endpoints (unchanged)
 
 * `GET /health`
