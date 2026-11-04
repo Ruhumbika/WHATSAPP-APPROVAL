@@ -31,6 +31,28 @@ After provisioning, configure the generic adapter separately using the
 A controlled gateway/worker reload is required because adapters are loaded at
 process startup. This configuration is an operator responsibility in v0.1.
 
+## Credential rotation and revocation (operator-only)
+
+Existing integration credentials can now be rotated or revoked through the
+privileged CLI below. In production add `--production-approved`.
+The operator must securely deliver the new key to the ERP developer.
+
+```bash
+python3 -m approval_gateway.manage_erp_credentials --system external_erp --rotate-key
+python3 -m approval_gateway.manage_erp_credentials --system external_erp --revoke
+```
+
+Rotation **immediately invalidates** the previous API key; there is no grace
+period or staged rollover. Do not rotate a live integration until the ERP has
+a coordinated deployment plan. Revocation stops authenticated intake/reads and
+prevents pending approvals from being authorized through an active source.
+Credential lifecycle changes are audit-recorded in the database.
+
+This CLI does not rotate the separate callback HMAC secret or verification
+token; those require controlled operator changes. Automatic credentials,
+webhook updates, customer-facing onboarding and safe zero-downtime rotation
+remain future release gates.
+
 ## Current gateway endpoints (unchanged)
 
 * `GET /health`
