@@ -611,6 +611,78 @@ PETA tables: existing requisition/approval-chain/business tables; Laravel `jobs`
 
 Gateway startup calls schema initialization/upgrade and workflow-event initialization. Notification tables are created idempotently; they are not Laravel migrations. PETA migrations are deployed using its PHP version and production migration procedure; never run migrate:fresh/reset against live data.
 
+### PETA document template setup and PDF media upload (legacy feature)
+
+This is an **operator-only PETA document-template workflow**, not a requirement for third-party ERPs using the generic `approval_request` template. The current WhatsApp Business Account must own and approve the selected template; a template approved on another WABA is not sufficient.
+
+For the legacy `requisition_approval_document` template, the intended structure is:
+
+- Language: `sw` (Swahili), when configured and approved on our sending WABA.
+- Document header using a Meta-uploaded PDF media ID.
+- Six positional body parameters: company, requisition reference, requester, department, formatted total, reason.
+- Quick-reply buttons in order: **Approve**, **Reject**.
+- PDF must be from an authorized snapshot, have a PDF signature, and comply with the gateway's 20 MiB limit.
+
+An operator may upload a trusted local PDF using the existing helper (which performs a **real Meta upload**, not a dry-run simulation):
+
+```bash
+python3 -m approval_gateway.upload_document /absolute/path/Requisition.pdf
+```
+
+The resulting `document_media_id` can be included in the relevant PETA approval payload with an appropriate `document_filename`. See `sample_document_approval_request.json` for the legacy example. Keep `source_system`, company scope, actual record reference, step and immutable workflow version synchronized with the ERP. Do not expose Meta credentials to external ERP developers or browser code.
+
+**Important:** Existing PETA deployments may use a different document template (including the detailed 17-parameter variant), and the live environment already manages its WhatsApp sender. Never overwrite global WhatsApp template settings merely to onboard another ERP. Use the generic text template for universal ERP integration, and test PETA-specific PDF behavior independently before changing its configuration.
+
+### Exact ERP decision callback example
+
+The following is an illustrative **gateway-generated** decision event, not a request the ERP developer sends to the gateway. Field names match `approval_gateway/service.py::_callback_payload`; values are examples.
+
+```json
+{
+  "event_id": "decision:AGR-EXAMPLE123",
+  "gateway_reference_id": "AGR-EXAMPLE123",
+  "reference_id": "LEAVE-2026-001",
+  "source_system": "sample_erp",
+  "company": "14",
+  "request_type": "leave_approval",
+  "step_id": "manager",
+  "workflow_version": "record-v1",
+  "status": "approved",
+  "responded_at": "2026-11-04T09:00:00+00:00",
+  "channel": "whatsapp",
+  "actor": {
+    "directory_uuid": "0656c52c-970d-11f1-b365-6805cae19a58",
+    "user_id": "7",
+    "name": "Sample ERP User",
+    "phone": "255700000001"
+  },
+  "evidence": {
+    "message_id": "wamid.example",
+    "original_reply": "Approve",
+    "context_id": null
+  },
+  "payload": {
+    "employee_id": "7",
+    "leave_days": 5,
+    "_gateway_workflow": {
+      "module_id": "leave",
+      "step_id": "manager",
+      "record_digest": "record-v1"
+    }
+  }
+}
+```
+
+The ERP must verify these headers against the **original raw HTTP request bytes**:
+
+```http
+X-Approval-Gateway-Timestamp: <UNIX_SECONDS>
+X-Approval-Gateway-Signature: <LOWERCASE_HEX_HMAC_SHA256>
+Idempotency-Key: decision:AGR-EXAMPLE123
+```
+
+Compute HMAC SHA-256 with the registered ERP callback secret over `timestamp + "." + raw_body`, compare in constant time, and enforce the five-minute timestamp window (allowing at most 30 seconds of future clock skew). Check source company, assignment, current step and workflow version inside the ERP transaction; persist `event_id` in the same transaction. For a committed action return HTTP 200 with `{"event_id":"decision:AGR-EXAMPLE123","execution_status":"applied"}`. For a definitive refusal return matching `event_id` with `execution_status:"rejected"`. Plain HTTP 200 without this acknowledgment does **not** prove ERP execution.
+
 ## Troubleshooting and operational recovery
 
 | Symptom | Diagnose / correction |
