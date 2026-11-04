@@ -62,6 +62,28 @@ def rotate_api_key(conn, system: str, overlap_minutes: int = 0) -> str:
     return key
 
 
+def finish_rotation(conn, system: str) -> None:
+    """Immediately retire the previous credential without disabling the new key."""
+    if not isinstance(system, str) or not system.strip():
+        raise ValueError("A registered system name is required")
+    active = conn.execute(
+        "SELECT 1 FROM api_clients WHERE system_name=? AND active=1", (system,)
+    ).fetchone()
+    if active is None:
+        raise ValueError("Only active integrations can finish a rotation")
+    deleted = conn.execute(
+        "DELETE FROM api_client_key_overlaps WHERE system_name=?", (system,)
+    )
+    if deleted.rowcount != 1:
+        raise ValueError("No previous key overlap exists")
+    conn.execute(
+        """INSERT INTO integration_credential_events
+           (system_name,event_type,created_at)
+           VALUES (?,'api_key_overlap_finished',?)""",
+        (system, utc_now()),
+    )
+
+
 def revoke_client(conn, system: str) -> None:
     """Disable a client; existing tasks are not silently deleted."""
     if not isinstance(system, str) or not system.strip():
@@ -87,11 +109,12 @@ def main() -> None:
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--rotate-key", action="store_true")
     actions.add_argument("--revoke", action="store_true")
+    actions.add_argument("--finish-rotation", action="store_true")
     parser.add_argument("--overlap-minutes", type=int, default=0,
                         help="Optional old-key overlap (0 to 1440 minutes).")
     parser.add_argument("--production-approved", action="store_true")
     args = parser.parse_args()
-    if args.revoke and args.overlap_minutes != 0:
+    if not args.rotate_key and args.overlap_minutes != 0:
         parser.error("--overlap-minutes is valid only with --rotate-key")
     settings = load_settings()
     if settings.app_env == "production" and not args.production_approved:
@@ -103,6 +126,9 @@ def main() -> None:
             conn.execute("BEGIN IMMEDIATE")
             if args.rotate_key:
                 new_key = rotate_api_key(conn, args.system, args.overlap_minutes)
+            elif args.finish_rotation:
+                finish_rotation(conn, args.system)
+                new_key = None
             else:
                 revoke_client(conn, args.system)
                 new_key = None
@@ -114,6 +140,8 @@ def main() -> None:
             print(f"Previous API key remains valid for up to {args.overlap_minutes} minutes.")
         else:
             print("Previous API key is invalidated immediately.")
+    elif args.finish_rotation:
+        print("Previous API key retired; current key remains active:", args.system)
     else:
         print("ERP API client revoked:", args.system)
 
