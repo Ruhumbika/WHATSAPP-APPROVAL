@@ -182,8 +182,8 @@ def receive(settings, response: dict) -> dict | None:
              item["source_user_id"], cursor.lastrowid),
         )
         conn.execute(
-            "UPDATE identity_link_challenges SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
-            (now, item["id"]),
+            "UPDATE identity_link_challenges SET consumed_at=?, verified_at=? WHERE id=? AND consumed_at IS NULL",
+            (now, now, item["id"]),
         )
         conn.execute(
             "INSERT INTO inbound_messages(message_id,received_at) VALUES (?,?)",
@@ -220,7 +220,7 @@ def status(settings, key: str, identity: str, company: str) -> dict:
                 AND c.source_user_id=b.source_user_id
                 AND c.phone_number=a.phone_number
                WHERE b.system_name=? AND b.company=? AND b.directory_uuid=?
-                 AND b.active=1 AND c.consumed_at IS NOT NULL LIMIT 1""",
+                 AND b.active=1 AND c.verified_at IS NOT NULL LIMIT 1""",
             (system, company, identity),
         ).fetchone()
         return {"verified": binding is not None, "company": company, "actor_directory_uuid": identity}
