@@ -348,13 +348,27 @@ def _send_delivery(
     if defer_delivery(settings, request):
         return
     try:
-        message_id = client.send_approval_request(
-            request["actor_phone"],
-            request["company"],
-            request["message"],
-            request["gateway_reference_id"],
-            details,
-        )
+        # All systems send from OUR Meta Business number. Generic ERPs use
+        # the provider-owned two-field approval_request template rather
+        # than inheriting PETA's document-specific global template.
+        from .integrations.generic import GenericWorkflowGuard
+        if isinstance(adapter, GenericWorkflowGuard):
+            message_id = client.send_approval_request(
+                request["actor_phone"],
+                request["company"],
+                request["message"],
+                request["gateway_reference_id"],
+                details,
+                template_name="approval_request",
+            )
+        else:
+            message_id = client.send_approval_request(
+                request["actor_phone"],
+                request["company"],
+                request["message"],
+                request["gateway_reference_id"],
+                details,
+            )
     except ValueError:
         _finish_delivery(
             settings,
