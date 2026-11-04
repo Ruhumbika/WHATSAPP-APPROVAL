@@ -155,6 +155,7 @@ class IdentityLinkHTTPTests(unittest.TestCase):
         self.assertEqual(report["system"], "external")
         self.assertEqual(report["allowed_companies"], ["14"])
         self.assertTrue(report["configuration_checks"]["active_client"])
+        self.assertTrue(report["configuration_checks"]["generic_adapter_loaded"])
         self.assertFalse(report["integration_ready"])
         self.assertNotIn("gateway-key", json.dumps(report))
         self.assertNotIn("meta-test-secret", json.dumps(report))
