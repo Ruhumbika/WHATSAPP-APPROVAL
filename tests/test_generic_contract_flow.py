@@ -15,7 +15,7 @@ from approval_gateway.db import connection, init_db
 from approval_gateway.integrations.generic import GenericWorkflowGuard
 from approval_gateway.integrations.registry import configure_workflow_guards
 from approval_gateway.repository import create_api_client
-from approval_gateway.service import create, decide, ServiceError
+from approval_gateway.service import create, decide, verify_delivery_workflow, ServiceError
 from approval_gateway.upgrade import migrate
 from approval_gateway.worker import _claim_callback, _send_callback
 
@@ -97,6 +97,13 @@ class UniversalContractFlowTests(unittest.TestCase):
             "actor_directory_uuid": ACTOR, "message": "Please review",
             "payload": {"employee_id": "7"},
         })
+
+    def test_pre_delivery_verifies_record_version_and_payload(self):
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            task, _ = self.create_task()
+            verify_delivery_workflow(self.settings, task)
+            self.assertEqual(self.verified_versions, ["revision-1", "revision-1"])
+            self.assertEqual(self.digest, "revision-1")
 
     def test_changed_record_digest_blocks_decision(self):
         with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
