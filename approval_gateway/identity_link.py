@@ -308,6 +308,16 @@ def revoke(settings, key: str, identity: str, data: dict) -> dict:
                  AND consumed_at IS NULL""",
             (now, system, company, identity),
         )
+        # Disable the previous recipient without destroying historical task
+        # references. A new verified link creates its own approver record.
+        conn.execute(
+            """UPDATE approvers SET active=0,updated_at=?
+               WHERE id=? AND NOT EXISTS (
+                 SELECT 1 FROM actor_bindings
+                 WHERE approver_id=? AND active=1
+               )""",
+            (now, binding["approver_id"], binding["approver_id"]),
+        )
         conn.execute(
             """INSERT INTO identity_link_events
                (system_name,company,directory_uuid,source_user_id,
