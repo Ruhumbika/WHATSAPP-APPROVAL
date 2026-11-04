@@ -80,6 +80,24 @@ _SCHEMA_STATEMENTS = (
         ON integration_credential_events(system_name, id)
     """,
     """
+    CREATE TABLE IF NOT EXISTS identity_link_challenges (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL REFERENCES api_clients(system_name),
+        company TEXT NOT NULL,
+        directory_uuid TEXT NOT NULL,
+        source_user_id TEXT NOT NULL,
+        phone_number TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_identity_link_scope
+        ON identity_link_challenges(system_name,company,directory_uuid)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS actor_bindings (
         id INTEGER PRIMARY KEY,
         system_name TEXT NOT NULL
