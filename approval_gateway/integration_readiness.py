@@ -54,6 +54,16 @@ def inspect_integration(conn, system: str) -> dict[str, object]:
     }
 
 
+def read_erp_status(settings, key: str) -> dict[str, object]:
+    """Read-only status for the authenticated ERP; no provider secrets."""
+    from .service import get_client
+
+    with connection(settings) as conn:
+        conn.execute("BEGIN")
+        system = get_client(conn, key)["system_name"]
+        return inspect_integration(conn, system)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--system", required=True)
