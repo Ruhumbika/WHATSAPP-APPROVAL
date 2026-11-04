@@ -112,6 +112,33 @@ class IdentityLinkTests(unittest.TestCase):
             start(self.settings, "external-key", self.data)
         self.assertEqual(exc.exception.status, 409)
 
+    def test_link_requests_are_rate_limited(self):
+        for i in range(5):
+            self.assertEqual(
+                start(self.settings, "external-key", self.data)["status"],
+                "pending_phone_verification",
+            )
+        with self.assertRaises(ServiceError) as exc:
+            start(self.settings, "external-key", self.data)
+        self.assertEqual(exc.exception.status, 429)
+
+    def test_preexisting_binding_does_not_claim_otp_verification(self):
+        with connection(self.settings) as conn:
+            conn.execute(
+                """INSERT INTO approvers
+                   (name,role,company,phone_number,active,created_at,updated_at)
+                   VALUES ('Manual','manager','14',?,1,'now','now')""",
+                (PHONE,),
+            )
+            pid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO actor_bindings
+                   (system_name,company,directory_uuid,source_user_id,approver_id)
+                   VALUES ('external','14',?,?,?)""",
+                (UUID, "7", pid),
+            )
+        self.assertFalse(status(self.settings, "external-key", UUID, "14")["verified"])
+
     def test_unrelated_incoming_text_is_not_consumed(self):
         self.assertIsNone(self.send("Approve", message_id="wamid.other"))
         self.assertIsNone(self.send("MENU", message_id="wamid.menu"))
