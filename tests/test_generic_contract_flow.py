@@ -54,6 +54,7 @@ class UniversalContractFlowTests(unittest.TestCase):
         self.addCleanup(lambda: configure_workflow_guards({}))
         with connection(self.settings) as conn:
             create_api_client(conn, "external", "gateway-key")
+            conn.execute("INSERT INTO integration_company_scopes (system_name, company) VALUES (?, ?)", ("external", "14"))
             conn.execute("INSERT INTO integrations (system_name,callback_url,callback_secret) VALUES (?,?,?)",
                          ("external", "https://external.example.com/callback", "s" * 32))
             conn.execute("""INSERT INTO approvers
@@ -97,6 +98,32 @@ class UniversalContractFlowTests(unittest.TestCase):
             "actor_directory_uuid": ACTOR, "message": "Please review",
             "payload": {"employee_id": "7"},
         })
+
+    def test_unscoped_company_is_denied_before_erp_network_request(self):
+        with patch("urllib.request.OpenerDirector.open", side_effect=AssertionError("should not call ERP")):
+            with self.assertRaises(ServiceError) as denied:
+                create(self.settings, "gateway-key", {
+                    "source_system": "external", "company": "99",
+                    "request_type": "leave_approval", "reference_id": "LEAVE-99",
+                    "step_id": "manager", "workflow_version": "revision-1",
+                    "actor_directory_uuid": ACTOR, "message": "Please review",
+                    "payload": {"employee_id": "7"},
+                })
+            self.assertEqual(denied.exception.status, 403)
+
+    def test_scope_revocation_blocks_read_and_cancel(self):
+        from approval_gateway.service import read_request, cancel
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            task, _ = self.create_task()
+        with connection(self.settings) as conn:
+            conn.execute("DELETE FROM integration_company_scopes WHERE system_name=?", ("external",))
+        for operation in (
+            lambda: read_request(self.settings, "gateway-key", task["gateway_reference_id"]),
+            lambda: cancel(self.settings, "gateway-key", task["gateway_reference_id"]),
+        ):
+            with self.assertRaises(ServiceError) as denied:
+                operation()
+            self.assertEqual(denied.exception.status, 403)
 
     def test_pre_delivery_verifies_record_version_and_payload(self):
         with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
