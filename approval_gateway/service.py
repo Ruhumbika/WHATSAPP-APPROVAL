@@ -115,7 +115,11 @@ def _check_company_scope(conn: sqlite3.Connection, system: str, company: str) ->
     """Fail closed for generic ERPs; preserve unscoped legacy adapters."""
     from .integrations.generic import GenericWorkflowGuard
 
-    generic = isinstance(get_workflow_guard(system), GenericWorkflowGuard)
+    try:
+        generic = isinstance(get_workflow_guard(system), GenericWorkflowGuard)
+    except IntegrationUnavailable:
+        # Preserve the original API error mapping in _authorize_workflow().
+        return
     configured = conn.execute(
         "SELECT 1 FROM integration_company_scopes WHERE system_name=? LIMIT 1",
         (system,),
