@@ -111,6 +111,24 @@ def get_client(
     return client
 
 
+def _check_company_scope(conn: sqlite3.Connection, system: str, company: str) -> None:
+    """Fail closed for generic ERPs; preserve unscoped legacy adapters."""
+    from .integrations.generic import GenericWorkflowGuard
+
+    generic = isinstance(get_workflow_guard(system), GenericWorkflowGuard)
+    configured = conn.execute(
+        "SELECT 1 FROM integration_company_scopes WHERE system_name=? LIMIT 1",
+        (system,),
+    ).fetchone()
+    if generic and configured is None:
+        raise ServiceError("Generic ERP has no provisioned company scopes.", 403)
+    if configured is not None and conn.execute(
+        "SELECT 1 FROM integration_company_scopes WHERE system_name=? AND company=?",
+        (system, company),
+    ).fetchone() is None:
+        raise ServiceError("Company is not permitted for this integration.", 403)
+
+
 def _validate_request(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ServiceError("JSON object required.")
@@ -631,11 +649,14 @@ def create(
     # Public task creation always authenticates with an API key.
     with connection(settings) as conn:
         system = get_client(conn, key)["system_name"]
+        if isinstance(data, dict):
+            _check_company_scope(conn, system, _text(data.get("company"), "company"))
     prepared, actor = _prepare_task(system, data)
     with connection(settings) as conn:
         conn.execute("BEGIN IMMEDIATE")
         if get_client(conn, key)["system_name"] != system:
             raise ServiceError("API client changed during verification.", 409)
+        _check_company_scope(conn, system, prepared["company"])
         return _persist_task(conn, settings, system, prepared, actor)
 
 
@@ -1194,6 +1215,7 @@ def read_request(
         conn.execute("BEGIN")
         client = get_client(conn, key)
         request = _owned_request(conn, client["system_name"], reference)
+        _check_company_scope(conn, client["system_name"], request["company"])
         request["audit"] = [
             dict(row)
             for row in conn.execute(
@@ -1223,6 +1245,7 @@ def cancel(
         conn.execute("BEGIN IMMEDIATE")
         client = get_client(conn, key)
         request = _owned_request(conn, client["system_name"], reference)
+        _check_company_scope(conn, client["system_name"], request["company"])
         if request["status"] != "pending":
             raise ServiceError("Only pending tasks can be cancelled.", 409)
         if _expired(request["expires_at"]):
