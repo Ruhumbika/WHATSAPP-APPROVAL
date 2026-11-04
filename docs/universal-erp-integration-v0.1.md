@@ -103,13 +103,41 @@ ERP verification endpoint and signed decision callback.
    /api/identity-links/{actor_directory_uuid}?company=14** with its gateway
    API key. No Meta API interaction is required by the ERP.
 
+### Revocation and phone reassignment (development branch)
+
+To revoke an existing verified identity, the ERP backend sends:
+
+```http
+POST /api/identity-links/{actor_directory_uuid}/revoke
+Authorization: Bearer <GATEWAY_API_KEY>
+Content-Type: application/json
+```
+
+```json
+{"company":"14","source_user_id":"7"}
+```
+
+Only the same authenticated ERP, company and source-user binding may revoke.
+Revocation is rejected with HTTP 409 while pending approval tasks exist.
+**The ERP must cancel those tasks first** through the existing
+`/api/approval-requests/{id}/cancel` endpoint, or resolve them.
+
+After revocation, `GET /api/identity-links/{uuid}?company=14` returns
+`verified:false`. A future `POST /api/identity-links` may use a different
+phone number, but the gateway must receive a fresh, signed inbound WhatsApp
+`LINK` message from that new phone. Historic approvals and identity-link
+audit events are preserved. ERP developers never need Meta app access.
+
+A completed phone verification is tracked using `verified_at`, distinct
+from `consumed_at` (which also records invalidated challenges). This avoids
+mistaking a cancelled code for proof of WhatsApp phone ownership.
+
 This verifies *control of the WhatsApp account that sent the message*, not
 independently the real-world identity, HR employment or current ERP permission.
 The ERP must authenticate the requesting employee and independently authorize
 the actor, company and workflow step at creation and at decision time.
 Other linked Directory identities cannot silently take over the same number.
-Changing an existing binding requires a separate reviewed revocation/re-link
-procedure; the current endpoint intentionally refuses reassignment.
+Existing active bindings cannot be silently overwritten: the ERP must explicitly revoke and then complete a new WhatsApp phone-possession challenge.
 
 The phone-linking API currently has no comprehensive per-ERP issuance rate
 limits, staff self-service revocation or live-Meta integration acceptance; do
