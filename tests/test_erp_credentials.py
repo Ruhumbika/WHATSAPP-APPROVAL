@@ -2,7 +2,7 @@
 import sqlite3
 import unittest
 
-from approval_gateway.manage_erp_credentials import rotate_api_key, revoke_client
+from approval_gateway.manage_erp_credentials import rotate_api_key, revoke_client, finish_rotation
 from approval_gateway.provision_erp import provision
 from approval_gateway.repository import authenticate_client
 
@@ -80,6 +80,23 @@ class CredentialLifecycleTests(unittest.TestCase):
         self.conn.commit()
         self.assertIsNone(authenticate_client(self.conn, self.old_key))
         self.assertIsNotNone(authenticate_client(self.conn, new_key))
+
+    def test_early_finish_rotation_retires_only_previous_key(self):
+        self.conn.execute("BEGIN IMMEDIATE")
+        new_key = rotate_api_key(self.conn, "external", overlap_minutes=20)
+        self.conn.commit()
+        self.assertIsNotNone(authenticate_client(self.conn, self.old_key))
+        self.conn.execute("BEGIN IMMEDIATE")
+        finish_rotation(self.conn, "external")
+        self.conn.commit()
+        self.assertIsNone(authenticate_client(self.conn, self.old_key))
+        self.assertIsNotNone(authenticate_client(self.conn, new_key))
+        event = self.conn.execute(
+            "SELECT event_type FROM integration_credential_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(event["event_type"], "api_key_overlap_finished")
+        with self.assertRaises(ValueError):
+            finish_rotation(self.conn, "external")
 
     def test_revocation_invalidates_overlap_and_current_key(self):
         self.conn.execute("BEGIN IMMEDIATE")
