@@ -39,6 +39,7 @@ class ErpProvisionTests(unittest.TestCase):
 
     def test_refuses_duplicate_without_rotating(self):
         key, _ = provision(self.conn, "external", "https://erp.example.com/callback")
+        self.conn.commit()
         with self.assertRaises(ValueError):
             provision(self.conn, "external", "https://erp.example.com/other")
         client = self.conn.execute(
