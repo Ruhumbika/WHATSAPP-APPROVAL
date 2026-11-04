@@ -229,21 +229,19 @@ def status(settings, key: str, identity: str, company: str) -> dict:
         if not generic:
             raise ServiceError("Link status requires a configured generic ERP.", 403)
         _check_company_scope(conn, system, company)
-        # Status confirms completed WhatsApp phone proof, not merely an
-        # operator-entered actor mapping or an ERP-provided phone assertion.
+        from .identity_verification import has_current_phone_proof
         binding = conn.execute(
-            """SELECT 1 FROM actor_bindings b
-               JOIN approvers a ON a.id=b.approver_id AND a.active=1
-               JOIN identity_link_challenges c
-                 ON c.system_name=b.system_name AND c.company=b.company
-                AND c.directory_uuid=b.directory_uuid
-                AND c.source_user_id=b.source_user_id
-                AND c.phone_number=a.phone_number
+            """SELECT b.approver_id,b.source_user_id,a.phone_number
+               FROM actor_bindings b JOIN approvers a ON a.id=b.approver_id
                WHERE b.system_name=? AND b.company=? AND b.directory_uuid=?
-                 AND b.active=1 AND c.verified_at IS NOT NULL LIMIT 1""",
+                 AND b.active=1 AND a.active=1""",
             (system, company, identity),
         ).fetchone()
-        return {"verified": binding is not None, "company": company, "actor_directory_uuid": identity}
+        verified = binding is not None and has_current_phone_proof(
+            conn, system, company, identity, binding["source_user_id"],
+            binding["approver_id"], binding["phone_number"],
+        )
+        return {"verified": verified, "company": company, "actor_directory_uuid": identity}
 
 
 def revoke(settings, key: str, identity: str, data: dict) -> dict:
