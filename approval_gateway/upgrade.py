@@ -90,6 +90,7 @@ _SCHEMA_STATEMENTS = (
         token_hash TEXT NOT NULL UNIQUE,
         expires_at TEXT NOT NULL,
         consumed_at TEXT,
+        verified_at TEXT,
         created_at TEXT NOT NULL
     )
     """,
@@ -237,6 +238,16 @@ def migrate(settings: Settings) -> None:
         # Execute individually to preserve the surrounding transaction.
         for statement in _SCHEMA_STATEMENTS:
             conn.execute(statement)
+
+        # Older installations may already have the challenge table; track
+        # successful phone proof separately from cancelled/invalidated codes.
+        link_columns = {row["name"] for row in conn.execute(
+            "PRAGMA table_info(identity_link_challenges)"
+        )}
+        if "verified_at" not in link_columns:
+            conn.execute(
+                "ALTER TABLE identity_link_challenges ADD COLUMN verified_at TEXT"
+            )
 
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(decision_repeat_notifications)")}
         if "payload_json" not in columns:
