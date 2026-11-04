@@ -346,9 +346,11 @@ On successful application return HTTP 200 with **exactly** the same event ID and
 
 The ERP owns subsequent workflow steps and can submit the next task after committing the previous step.
 
-## Complete external ERP implementation flow
+### Generic versus legacy ERP trigger routes
 
-## ERP developer implementation
+For a new generic ERP, submit **direct approval requests** to `POST /api/approval-requests`. The older `POST /api/workflow-events` event-trigger flow requires a source adapter implementing `resolve_workflow_event`; the generic adapter does not implement this method. Do not advertise `/api/workflow-events` as a plug-and-play generic onboarding route.
+
+## ERP developer implementation — complete integration flow
 
 **1. Authenticate your employee inside your ERP.** Identify your local
 `source_user_id`, company and Directory UUID. Current permissions and
@@ -437,7 +439,7 @@ Never return `applied` before the ERP transaction commits.
 
 This is a **local-only simulated environment**, not a hosted public self-service sandbox and not proof of live Meta delivery. It must use separate test database, keys and local loopback; never send real WhatsApp messages.
 
-## Bootstrap
+### Bootstrap
 
 From a local checkout of this feature branch, in a **nonproduction** shell:
 
@@ -477,7 +479,7 @@ curl -fsS http://127.0.0.1:8098/health
 Run Postman against `http://127.0.0.1:8098` using the sandbox API key.
 The `sandbox_erp` client is registered for company `sandbox`.
 
-## What is not configured automatically
+### What is not configured automatically
 
 The bootstrap deliberately does **not** invent an independent ERP backend,
 an HTTPS verification endpoint, valid actor bindings, a Meta signature or
@@ -495,7 +497,7 @@ run the approval worker. Keep real Meta credentials and real phone messages
 out of this sandbox. Do not present a mocked callback as evidence of
 production ERP execution.
 
-## Safety / release constraints
+### Sandbox safety / release constraints
 
 - Never expose the loopback sandbox on a public VPS interface.
 - Keep sandbox credentials, SQLite database and environment file out of Git.
@@ -508,9 +510,9 @@ production ERP execution.
 
 ## PETA-specific legacy integration details
 
-The following material is retained from the former Requisition Developer Guide because it describes **PETA's legacy integration**, not the generic protocol. New ERP developers should implement the generic verification interface rather than copying PETA's adapter or requisition-specific templates.
+This section preserves operational facts for **PETA's legacy integration**, distinct from the generic protocol. New ERP developers should implement the generic verification interface rather than copying PETA's adapter or requisition-specific templates.
 
-## 5. PETA record, identity and workflow evidence
+### PETA record, identity and workflow evidence
 
 PETA adapter routes (relative to `/api/v1`):
 
@@ -534,7 +536,7 @@ A ban marker is denied even if `is_active=1`. Missing/expired Directory authoriz
 
 PETA digest is SHA-256 of compact sorted JSON containing record fields except display-only `approval`, module ID, level database ID, action, and sorted assigned user IDs. Do not reproduce this hash with a different JSON/number normalization algorithm. The signed snapshot is compared with current ERP data; display progress is excluded, list order preserved.
 
-## 6. PDF and templates
+### PETA PDF and WhatsApp templates
 
 PETA `WhatsAppApprovalDocumentController` checks its dedicated bearer credential and calls `RequisitionController::getPrintOut($requisition, false)`. Reuse preserves the existing document layout; the integration must not set the printed flag. No PDF redesign was included in this phase.
 
@@ -577,7 +579,7 @@ Document header: numeric `document_media_id` and a plain `.pdf` filename. Body v
 
 Meta template name, language, body order, document header and button definitions must match the approved template in the sender's WABA. Approval in another WABA is not enough. Current mapping alone does not prove Meta deployment alignment. `sent` means API acceptance with a message ID, not confirmed recipient delivery/read.
 
-## 7. State model and persistence
+### Approval state model and persistence
 
 | Layer | States / meaning |
 |---|---|
@@ -611,8 +613,6 @@ Gateway startup calls schema initialization/upgrade and workflow-event initializ
 
 ## Troubleshooting and operational recovery
 
-## 13. Troubleshooting learned during integration
-
 | Symptom | Diagnose / correction |
 |---|---|
 | Public workflow endpoint Apache HTML 404, local endpoint 401 | Missing Apache proxy path; local 401 proves endpoint exists and rejects missing auth |
@@ -641,8 +641,6 @@ Controlled recovery must preserve decision/receipt evidence. For a never-sent ta
 Gateway worker attempt limit is 8 for delivery/callback/event processing; notification limit is 5. Exponential retries and exact terminal conditions depend on exception classification. A scheduled retry can be in the future: timestamps in database are UTC; Tanzania is UTC+3. Host journal display timezone may differ; compare actual timestamps, not screen-clock assumptions.
 
 ## Release acceptance (mandatory)
-
-## Required acceptance before public release
 
 1. Independent external mock ERP sends a request and receives a real WhatsApp decision.
 2. ERP verifies callback HMAC and applies business action exactly once.
