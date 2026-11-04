@@ -296,6 +296,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
             result = start(self.settings, self.key(), self.parse_json(self.body()))
             self.reply(result, 201)
             return
+        if path.startswith("/api/identity-links/") and path.endswith("/revoke"):
+            if method != "POST":
+                raise ServiceError("Method not allowed.", 405)
+            from .identity_link import revoke
+            identity = path[len("/api/identity-links/"):-len("/revoke")]
+            if not identity or "/" in identity:
+                raise ServiceError("Invalid identity path.", 404)
+            self.reply(
+                revoke(self.settings, self.key(), identity, self.parse_json(self.body()))
+            )
+            return
         if path.startswith("/api/identity-links/"):
             if method != "GET":
                 raise ServiceError("Method not allowed.", 405)
