@@ -1,6 +1,6 @@
 # v2.1 — PDF requisition approvals
 
-Read DOCUMENT_APPROVAL_SETUP.md for upgrade, template and testing instructions.
+PETA document template, PDF upload and ERP integration instructions are consolidated in [the ERP Integration Developer Guide](docs/integration/README.md).
 
 # WhatsApp Approval Gateway v2
 
