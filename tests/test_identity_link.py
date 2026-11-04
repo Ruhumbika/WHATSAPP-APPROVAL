@@ -279,6 +279,49 @@ class IdentityLinkTests(unittest.TestCase):
             })
         self.assertTrue(status(self.settings, "external-key", UUID, "14")["verified"])
 
+    def test_operator_inserted_binding_cannot_create_generic_approval(self):
+        from approval_gateway.integrations.permissions import WorkflowActor
+        from approval_gateway.service import create
+        with connection(self.settings) as conn:
+            conn.execute(
+                """INSERT INTO approvers
+                   (name,role,company,phone_number,active,created_at,updated_at)
+                   VALUES ('Manual','manager','14',?,1,'now','now')""",
+                (PHONE,),
+            )
+            approver_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                """INSERT INTO actor_bindings
+                   (system_name,company,directory_uuid,source_user_id,approver_id)
+                   VALUES ('external','14',?,?,?)""",
+                (UUID, "7", approver_id),
+            )
+            conn.execute(
+                "INSERT INTO integrations VALUES (?,?,?)",
+                ("external", "https://erp.example.com/callback", "s" * 32),
+            )
+        actor = WorkflowActor(
+            directory_uuid=UUID, source_user_id="7", phone_number=PHONE,
+            module_id="leave", step_id="manager", record_digest="revision-1",
+        )
+        with patch(
+            "approval_gateway.integrations.generic.GenericWorkflowGuard.authorize",
+            return_value=actor,
+        ):
+            with self.assertRaises(ServiceError) as error:
+                create(self.settings, "external-key", {
+                    "source_system": "external", "company": "14",
+                    "request_type": "leave_approval", "reference_id": "LEAVE-1",
+                    "step_id": "manager", "workflow_version": "revision-1",
+                    "actor_directory_uuid": UUID, "message": "Please review",
+                    "payload": {"employee_id": "7"},
+                })
+            self.assertEqual(error.exception.status, 403)
+        with connection(self.settings) as conn:
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM approval_requests").fetchone()[0], 0
+            )
+
     def test_unrelated_incoming_text_is_not_consumed(self):
         self.assertIsNone(self.send("Approve", message_id="wamid.other"))
         self.assertIsNone(self.send("MENU", message_id="wamid.menu"))
