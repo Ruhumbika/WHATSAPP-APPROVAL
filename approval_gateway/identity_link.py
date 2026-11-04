@@ -74,6 +74,18 @@ def start(settings, key: str, data: dict) -> dict:
         ).fetchone()
         if conflict:
             raise ServiceError("WhatsApp number is linked to another identity.", 409)
+        # Limit repeated challenges from one ERP to one target phone.
+        # Issuing a new challenge does not reset this rolling limit.
+        since = (datetime.now(timezone.utc) - timedelta(minutes=15)).replace(
+            microsecond=0
+        ).isoformat()
+        recent = conn.execute(
+            """SELECT COUNT(*) FROM identity_link_challenges
+               WHERE system_name=? AND phone_number=? AND created_at>=?""",
+            (system, phone, since),
+        ).fetchone()[0]
+        if recent >= 5:
+            raise ServiceError("Too many link challenges; try again later.", 429)
         # Expire any prior unconsumed challenge in this identity scope.
         now = utc_now()
         conn.execute(
@@ -197,9 +209,18 @@ def status(settings, key: str, identity: str, company: str) -> dict:
         if not generic:
             raise ServiceError("Link status requires a configured generic ERP.", 403)
         _check_company_scope(conn, system, company)
+        # Status confirms completed WhatsApp phone proof, not merely an
+        # operator-entered actor mapping or an ERP-provided phone assertion.
         binding = conn.execute(
-            """SELECT 1 FROM actor_bindings
-               WHERE system_name=? AND company=? AND directory_uuid=? AND active=1""",
+            """SELECT 1 FROM actor_bindings b
+               JOIN approvers a ON a.id=b.approver_id AND a.active=1
+               JOIN identity_link_challenges c
+                 ON c.system_name=b.system_name AND c.company=b.company
+                AND c.directory_uuid=b.directory_uuid
+                AND c.source_user_id=b.source_user_id
+                AND c.phone_number=a.phone_number
+               WHERE b.system_name=? AND b.company=? AND b.directory_uuid=?
+                 AND b.active=1 AND c.consumed_at IS NOT NULL LIMIT 1""",
             (system, company, identity),
         ).fetchone()
         return {"verified": binding is not None, "company": company, "actor_directory_uuid": identity}
