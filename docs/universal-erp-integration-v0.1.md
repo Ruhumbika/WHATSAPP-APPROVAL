@@ -70,6 +70,24 @@ This CLI does not rotate the separate callback HMAC secret or verification
 token; those require controlled operator changes. Customer-facing onboarding,
 webhook updates and live end-to-end acceptance remain release gates.
 
+## Updating the registered ERP webhook receiver
+
+The operator can change the registered HTTPS callback destination without
+altering WhatsApp/Meta settings or editing gateway Python source code:
+
+```bash
+python3 -m approval_gateway.manage_erp_webhook \\
+  --system external_erp \\
+  --callback-url https://erp.example.com/webhooks/new-approval
+```
+
+Use `--production-approved` only after a reviewed production change.
+The operator must validate ownership of the new endpoint out-of-band first.
+The command refuses to update while there are pending approval requests
+**or** decisions awaiting terminal ERP acknowledgment. It does not rewrite
+historical event payloads or stored callbacks. Changes are audited. There is
+not yet an automatic domain ownership challenge or live webhook handshake.
+
 ## Operator configuration preflight
 
 Once provisioning has completed, inspect an ERP without disclosing its keys:
