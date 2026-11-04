@@ -292,6 +292,7 @@ def _preflight_decision(
         "company": task["company"],
         "request_type": task["request_type"],
         "step_id": task["step_id"],
+        "workflow_version": task["workflow_version"],
         "actor_directory_uuid": task["actor_directory_uuid"],
         "payload": json.loads(task["payload_json"]),
     }
@@ -816,7 +817,9 @@ def verify_delivery_workflow(settings: Settings, task: dict[str, Any]) -> None:
         "company": task["company"],
         "request_type": task["request_type"],
         "step_id": task["step_id"],
+        "workflow_version": task["workflow_version"],
         "actor_directory_uuid": task["actor_directory_uuid"],
+        "payload": json.loads(task["payload_json"]),
     }
     actor = _authorize_workflow(task["source_system"], data)
     if (
