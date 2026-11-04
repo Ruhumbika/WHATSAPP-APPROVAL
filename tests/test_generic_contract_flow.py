@@ -125,6 +125,34 @@ class UniversalContractFlowTests(unittest.TestCase):
                 operation()
             self.assertEqual(denied.exception.status, 403)
 
+    def test_unverified_actor_cannot_enroll_from_erp_assertion(self):
+        with connection(self.settings) as conn:
+            conn.execute("DELETE FROM actor_bindings WHERE system_name=?", ("external",))
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            with self.assertRaises(ServiceError) as denied:
+                self.create_task()
+            self.assertEqual(denied.exception.status, 403)
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM actor_bindings WHERE system_name=?",
+                ("external",),
+            ).fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM approval_requests"
+            ).fetchone()[0], 0)
+
+    def test_erp_phone_change_cannot_override_enrolled_phone(self):
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            with connection(self.settings) as conn:
+                conn.execute("UPDATE approvers SET phone_number=? WHERE id=1", ("255700000099",))
+            with self.assertRaises(ServiceError) as denied:
+                self.create_task()
+            self.assertEqual(denied.exception.status, 403)
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT phone_number FROM approvers WHERE id=1"
+            ).fetchone()[0], "255700000099")
+
     def test_pre_delivery_verifies_record_version_and_payload(self):
         with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
             task, _ = self.create_task()
