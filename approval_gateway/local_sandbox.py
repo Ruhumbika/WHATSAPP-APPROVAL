@@ -61,6 +61,11 @@ def create_local_sandbox(root: Path, port: int = 8098) -> dict[str, str]:
             "INTEGRATIONS_CONFIG_PATH": str(config_path),
             "WHATSAPP_ACCESS_TOKEN": "", "WHATSAPP_PHONE_NUMBER_ID": "",
             "META_APP_SECRET": "", "META_VERIFY_TOKEN": "",
+            "CALLBACK_SECRET": "",
+            "WORKFLOW_NOTIFICATIONS_ENABLED": "false",
+            "WHATSAPP_REJECTION_FLOW_ENABLED": "false",
+            "WHATSAPP_REJECTION_FLOW_ID": "",
+            "WHATSAPP_ADMIN_PHONES": "",
         }
         env_path.write_text(
             "".join(f"{key}={value}\n" for key, value in env_values.items()),
