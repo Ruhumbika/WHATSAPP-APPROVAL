@@ -99,8 +99,9 @@ class WhatsAppClient:
         company: str,
         message: str,
         details: dict[str, Any],
+        template_name: str | None = None,
     ) -> list[dict[str, str]]:
-        template = self.settings.whatsapp_template_name
+        template = template_name or self.settings.whatsapp_template_name
 
         if template in _DOCUMENT_FIELDS:
             # Detailed messages require the ERP's company display name.
@@ -208,6 +209,8 @@ class WhatsAppClient:
         message: str,
         gateway_reference_id: str,
         details: dict[str, Any] | None = None,
+        *,
+        template_name: str | None = None,
     ) -> str:
         phone = normalize_phone(to_phone_number)
 
@@ -226,7 +229,7 @@ class WhatsAppClient:
         if re.fullmatch(r"AGR-[A-Z0-9]+", reference) is None:
             raise ValueError("Invalid gateway reference.")
 
-        template = self.settings.whatsapp_template_name
+        template = template_name or self.settings.whatsapp_template_name
         components = []
 
         if template in _DOCUMENT_FIELDS:
@@ -239,6 +242,7 @@ class WhatsAppClient:
                     company,
                     message,
                     details,
+                    template,
                 ),
             }
         )
