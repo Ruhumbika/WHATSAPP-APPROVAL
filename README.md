@@ -153,7 +153,7 @@ It revalidates the actor, company, step and current record at task creation,
 before delivery and before processing a decision. The existing PETA adapter
 and API routes are unchanged.
 
-Read [Universal ERP integration contract](docs/universal-erp-integration-v0.1.md)
+Start with the [external ERP developer quickstart](docs/integration/QUICKSTART.md).\nRead [Universal ERP integration contract](docs/universal-erp-integration-v0.1.md)
 for the exact current gateway endpoints, verification response, callback
 signature and execution acknowledgment. Start with the disabled
 `generic_example` in `config/integrations.example.json`. Operators can
