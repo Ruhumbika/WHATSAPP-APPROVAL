@@ -964,6 +964,11 @@ def _check_actor(
         raise ServiceError("Source system disabled.", 403)
 
 
+def _requires_rejection_reason(request: dict[str, Any]) -> bool:
+    from .rejection import requires_reason
+    return requires_reason(request)
+
+
 def _callback_payload(
     request: dict[str, Any],
     response: dict[str, Any],
@@ -1109,7 +1114,7 @@ def _commit_decision(
         if request["status"] != "pending":
             enqueue_repeat_notification(conn, request, response, now)
             return {"processed": False, "reason": request["status"]}
-        if response["action"] == "rejected" and request["request_type"] in {"requisition_approval", "payment_advice_approval"}:
+        if response["action"] == "rejected" and _requires_rejection_reason(request):
             from .rejection import consume_reason
             consume_reason(conn, request, response, now)
         else:
