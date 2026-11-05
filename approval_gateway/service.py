@@ -177,6 +177,14 @@ def _validate_request(data: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ServiceError("payload must be an object.")
 
+    # Approval-specific options are authoritative ERP policy, not a WhatsApp
+    # user preference. Reject malformed values instead of silently ignoring.
+    if "approval_options" in payload:
+        options = payload["approval_options"]
+        if (not isinstance(options, dict)
+                or set(options) != {"rejection_reason_required"}
+                or type(options["rejection_reason_required"]) is not bool):
+            raise ServiceError("Invalid approval_options in payload.")
     # Detach the snapshot from mutable caller-owned objects.
     result["payload"] = json.loads(_json(payload))
     if data.get("amount") is not None:
