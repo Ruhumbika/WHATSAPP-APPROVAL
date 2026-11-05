@@ -230,6 +230,55 @@ class UniversalContractFlowTests(unittest.TestCase):
                                (task["id"],)).fetchone()
             self.assertEqual(row["execution_status"], "applied")
 
+    def test_multiple_erp_approval_types_and_decisions_share_one_contract(self):
+        """Leave, purchasing and payment approvals use one generic adapter.
+
+        The source ERP remains responsible for the meaning of each action.
+        """
+        cases = (
+            ("leave_approval", "LEAVE-101", "approved"),
+            ("purchase_order_approval", "PO-102", "rejected"),
+            ("payment_approval", "PAY-103", "approved"),
+        )
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            for index, (request_type, reference, action) in enumerate(cases):
+                with self.subTest(request_type=request_type):
+                    data = {
+                        "source_system": "external", "company": "14",
+                        "request_type": request_type,
+                        "reference_id": reference,
+                        "step_id": "manager", "workflow_version": "revision-1",
+                        "actor_directory_uuid": ACTOR,
+                        "message": "Review " + request_type,
+                        "payload": {"kind": request_type, "item": reference},
+                        "idempotency_key": "external-" + reference + "-manager-v1",
+                    }
+                    task, created = create(self.settings, "gateway-key", data)
+                    self.assertTrue(created)
+                    same, created_again = create(self.settings, "gateway-key", data)
+                    self.assertFalse(created_again)
+                    self.assertEqual(same["id"], task["id"])
+                    result = decide(self.settings, {
+                        "action": action,
+                        "reference": task["gateway_reference_id"],
+                        "phone": "255700000001",
+                        "message_id": "wamid.generic.type." + str(index),
+                        "text": "Approve" if action == "approved" else "Reject",
+                        "context_id": None,
+                    })
+                    self.assertTrue(result["processed"])
+                    claimed = _claim_callback(self.settings)
+                    self.assertIsNotNone(claimed)
+                    _send_callback(self.settings, claimed)
+                    with connection(self.settings) as conn:
+                        saved = conn.execute(
+                            "SELECT status, execution_status FROM approval_requests WHERE id=?",
+                            (task["id"],)
+                        ).fetchone()
+                        self.assertEqual(saved["status"], action)
+                        self.assertEqual(saved["execution_status"], "applied")
+            self.assertEqual(self.callback_calls, len(cases))
+
     def test_create_decide_signed_callback_and_confirmation(self):
         with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
             task, created = self.create_task()
