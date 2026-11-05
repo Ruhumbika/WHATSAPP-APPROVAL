@@ -230,6 +230,27 @@ class UniversalContractFlowTests(unittest.TestCase):
                                (task["id"],)).fetchone()
             self.assertEqual(row["execution_status"], "applied")
 
+    def test_rejects_malformed_approval_policy(self):
+        for malformed in ({"rejection_reason_required": "true"},
+                          {"rejection_reason_required": 1},
+                          {"unknown_option": True}, None):
+            with self.subTest(value=malformed):
+                with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+                    with self.assertRaises(ServiceError) as denied:
+                        create(self.settings, "gateway-key", {
+                            "source_system": "external", "company": "14",
+                            "request_type": "expense_approval",
+                            "reference_id": "EX-100",
+                            "step_id": "manager", "workflow_version": "revision-1",
+                            "actor_directory_uuid": ACTOR, "message": "Expense",
+                            "payload": {"approval_options": malformed},
+                        })
+                    self.assertEqual(denied.exception.status, 400)
+        with connection(self.settings) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM approval_requests"
+            ).fetchone()[0], 0)
+
     def test_generic_erp_can_require_rejection_reason(self):
         """Configured ERP types enter the existing verified reason-review flow."""
         from approval_gateway.rejection import requires_reason
