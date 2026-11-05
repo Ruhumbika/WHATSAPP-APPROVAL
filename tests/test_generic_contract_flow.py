@@ -230,6 +230,62 @@ class UniversalContractFlowTests(unittest.TestCase):
                                (task["id"],)).fetchone()
             self.assertEqual(row["execution_status"], "applied")
 
+    def test_generic_erp_can_require_rejection_reason(self):
+        """Configured ERP types enter the existing verified reason-review flow."""
+        from approval_gateway.rejection import requires_reason
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            data = {
+                "source_system": "external", "company": "14",
+                "request_type": "expense_approval",
+                "reference_id": "EXPENSE-9",
+                "step_id": "manager", "workflow_version": "revision-1",
+                "actor_directory_uuid": ACTOR,
+                "message": "Expense requires review",
+                "payload": {
+                    "employee_id": "7",
+                    "approval_options": {"rejection_reason_required": True},
+                },
+            }
+            task, created = create(self.settings, "gateway-key", data)
+            self.assertTrue(created)
+            self.assertTrue(requires_reason(task))
+            started = decide(self.settings, {
+                "action": "rejected", "reference": task["gateway_reference_id"],
+                "phone": "255700000001", "message_id": "wamid.generic.reason.1",
+                "text": "Reject", "context_id": None,
+            })
+            self.assertTrue(started["processed"])
+            self.assertEqual(started["reason"], "rejection_conversation")
+            with connection(self.settings) as conn:
+                state = conn.execute(
+                    "SELECT status,rejection_phase,execution_status FROM approval_requests WHERE id=?",
+                    (task["id"],),
+                ).fetchone()
+                self.assertEqual(state["status"], "pending")
+                self.assertEqual(state["rejection_phase"], "choice")
+                self.assertEqual(state["execution_status"], "not_requested")
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM callback_attempts WHERE approval_request_id=?",
+                    (task["id"],)
+                ).fetchone()[0], 0)
+        self.assertEqual(self.callback_calls, 0)
+
+    def test_generic_approval_reason_policy_is_opt_in(self):
+        from approval_gateway.rejection import requires_reason
+        cases = (
+            ("external", "expense_approval", {}, False),
+            ("external", "expense_approval", {"approval_options": {"rejection_reason_required": False}}, False),
+            ("external", "expense_approval", {"approval_options": {"rejection_reason_required": True}}, True),
+            ("peta", "requisition_approval", {}, True),
+            ("peta", "payment_advice_approval", {}, True),
+        )
+        for system, kind, payload, expected in cases:
+            with self.subTest(system=system, request_type=kind):
+                self.assertEqual(requires_reason({
+                    "source_system": system, "request_type": kind,
+                    "payload_json": json.dumps(payload),
+                }), expected)
+
     def test_multiple_erp_approval_types_and_decisions_share_one_contract(self):
         """Leave, purchasing and payment approvals use one generic adapter.
 
