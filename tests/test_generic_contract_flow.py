@@ -312,6 +312,76 @@ class UniversalContractFlowTests(unittest.TestCase):
                 ).fetchone()[0], 0)
         self.assertEqual(self.callback_calls, 0)
 
+    def test_generic_rejection_reason_review_executes_only_after_confirmation(self):
+        from approval_gateway.rejection import requires_reason
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            task, created = create(self.settings, "gateway-key", {
+                "source_system": "external", "company": "14",
+                "request_type": "expense_approval", "reference_id": "EX-REASON-1",
+                "step_id": "manager", "workflow_version": "revision-1",
+                "actor_directory_uuid": ACTOR, "message": "Review expense",
+                "payload": {"approval_options": {"rejection_reason_required": True}},
+            })
+            self.assertTrue(created)
+            self.assertTrue(requires_reason(task))
+            ref = task["gateway_reference_id"]
+            def answer(action, text, suffix, **extra):
+                return decide(self.settings, dict(
+                    action=action, reference=ref, phone="255700000001",
+                    message_id="wamid.generic.review." + suffix,
+                    text=text, context_id=None, **extra
+                ))
+            first = answer("rejected", "Reject", "click")
+            self.assertEqual(first["reason"], "rejection_conversation")
+            choice = answer("conversation", "2", "mode")
+            self.assertEqual(choice["reason"], "rejection_conversation")
+            reason = answer("conversation", "Budget exceeded", "draft")
+            self.assertEqual(reason["reason"], "rejection_conversation")
+            with connection(self.settings) as conn:
+                row = conn.execute(
+                    "SELECT rejection_review_token,status FROM approval_requests WHERE id=?",
+                    (task["id"],),
+                ).fetchone()
+                self.assertTrue(row["rejection_review_token"])
+                self.assertEqual(row["status"], "pending")
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM callback_attempts WHERE approval_request_id=?",
+                    (task["id"],)
+                ).fetchone()[0], 0)
+                # Test a sent review prompt. Production sets this from Meta
+                # delivery; do not bypass delivered-context proof in the code.
+                token = row["rejection_review_token"]
+                conn.execute(
+                    "UPDATE decision_repeat_notifications SET status='simulated',message_id=? "
+                    "WHERE approval_request_id=? AND json_extract(payload_json,'$.token')=?",
+                    ("wamid.generic.review.prompt", task["id"], token),
+                )
+            confirmed = decide(self.settings, {
+                "action": "conversation", "reference": ref,
+                "phone": "255700000001",
+                "message_id": "wamid.generic.review.submit",
+                "text": "Submit rejection",
+                "context_id": "wamid.generic.review.prompt",
+                "review_action": "submit",
+                "review_token": token,
+            })
+            self.assertTrue(confirmed["processed"])
+            claim = _claim_callback(self.settings)
+            self.assertIsNotNone(claim)
+            event = json.loads(claim["payload_json"])
+            self.assertEqual(event["status"], "rejected")
+            self.assertEqual(event["rejection"], {
+                "mode": "final", "reason": "Budget exceeded",
+            })
+            _send_callback(self.settings, claim)
+        self.assertEqual(self.callback_calls, 1)
+        with connection(self.settings) as conn:
+            row = conn.execute(
+                "SELECT status,execution_status FROM approval_requests WHERE id=?",
+                (task["id"],),
+            ).fetchone()
+            self.assertEqual(tuple(row), ("rejected", "applied"))
+
     def test_generic_approval_reason_policy_is_opt_in(self):
         from approval_gateway.rejection import requires_reason
         cases = (
