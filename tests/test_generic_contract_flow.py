@@ -230,6 +230,27 @@ class UniversalContractFlowTests(unittest.TestCase):
                                (task["id"],)).fetchone()
             self.assertEqual(row["execution_status"], "applied")
 
+    def test_generic_rejection_summary_is_not_peta_specific(self):
+        from approval_gateway.chat_menu import task_label, task_summary
+        with patch("urllib.request.OpenerDirector.open", side_effect=self.fake_open):
+            task, created = create(self.settings, "gateway-key", {
+                "source_system": "external", "company": "14",
+                "request_type": "expense_approval", "reference_id": "EX-42",
+                "step_id": "manager", "workflow_version": "revision-1",
+                "actor_directory_uuid": ACTOR, "message": "Review expense",
+                "payload": {"approval_options": {"rejection_reason_required": True}},
+            })
+        self.assertTrue(created)
+        self.assertIn("Expense EX-42", task_label(task))
+        body = task_summary(task)
+        self.assertIn("Review expense", body)
+        self.assertNotIn("Payment Advice", body)
+        self.assertNotIn("See request PDF", body)
+        self.assertEqual(task_label({
+            "source_system": "peta", "request_type": "requisition_approval",
+            "source_reference_id": "42",
+        }), "REQ 42")
+
     def test_rejects_malformed_approval_policy(self):
         for malformed in ({"rejection_reason_required": "true"},
                           {"rejection_reason_required": 1},
