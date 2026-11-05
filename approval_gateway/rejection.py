@@ -104,6 +104,24 @@ def _resolve(settings, response, phone):
         return task
 
 
+def requires_reason(task):
+    """Follow ERP-declared rejection policy without affecting legacy PETA tasks.
+
+    The policy belongs to the authenticated ERP's immutable approval snapshot,
+    not a WhatsApp message or an administrator-edited global setting.
+    """
+    if task["request_type"] in {"requisition_approval", "payment_advice_approval"} and task["source_system"] == "peta":
+        return True
+    if task["source_system"] == "peta":
+        return False
+    try:
+        payload = json.loads(task["payload_json"])
+    except (ValueError, TypeError, KeyError):
+        return False
+    options = payload.get("approval_options") if isinstance(payload, dict) else None
+    return isinstance(options, dict) and options.get("rejection_reason_required") is True
+
+
 def route_response(settings, response):
     from .service import (
         ServiceError,
@@ -147,7 +165,7 @@ def route_response(settings, response):
     if task["actor_phone"] != phone:
         raise ServiceError("Responder is not the assigned actor.", 403)
     if (
-        task["request_type"] not in {"requisition_approval", "payment_advice_approval"}
+        not requires_reason(task)
         or task["status"] != "pending"
     ):
         if response["action"] == "rejected":

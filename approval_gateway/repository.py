@@ -62,6 +62,20 @@ def authenticate_client(
         if verify_api_key(api_key, row["api_key_hash"]):
             return dict(row)
 
+    # Accept a previous key only during its explicit, bounded rotation window.
+    # Expired overlap records are never valid even before cleanup occurs.
+    for row in conn.execute(
+        """SELECT c.*,o.previous_key_hash
+           FROM api_clients c
+           JOIN api_client_key_overlaps o ON o.system_name=c.system_name
+           WHERE c.active=1 AND o.expires_at>?""",
+        (utc_now(),),
+    ):
+        if verify_api_key(api_key, row["previous_key_hash"]):
+            result = dict(row)
+            result.pop("previous_key_hash", None)
+            return result
+
     return None
 
 

@@ -1,0 +1,244 @@
+{
+  "info": {
+    "name": "WhatsApp Approval Gateway - Generic ERP Developer (experimental)",
+    "description": "ERP integrates with gateway API only. All WhatsApp delivery, templates and signed Meta webhook events belong exclusively to the gateway. Development branch only; not production-ready.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "gateway_base_url",
+      "value": "http://127.0.0.1:8089"
+    },
+    {
+      "key": "gateway_api_key",
+      "value": ""
+    },
+    {
+      "key": "gateway_reference_id",
+      "value": "AGR-REPLACE"
+    },
+    {
+      "key": "source_system",
+      "value": "ghrm"
+    },
+    {
+      "key": "company",
+      "value": "14"
+    },
+    {
+      "key": "actor_directory_uuid",
+      "value": "0656c52c-970d-11f1-b365-6805cae19a58"
+    },
+    {
+      "key": "actor_phone",
+      "value": "255700000001"
+    },
+    {
+      "key": "source_user_id",
+      "value": "7"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{gateway_base_url}}/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Gateway reachable', function () {pm.response.to.have.status(200);});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Check onboarding configuration (no secrets)",
+      "request": {
+        "method": "GET",
+        "url": "{{gateway_base_url}}/api/integration-status",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          }
+        ],
+        "description": "ERP-scoped configuration details only. Does not claim production acceptance."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Authenticated integration status accessible', function () {pm.response.to.have.status(200);});",
+              "if(pm.response.code===200) {const d=pm.response.json();pm.expect(d).to.have.property('integration_ready',false);}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Start WhatsApp phone link (our gateway WhatsApp number)",
+      "request": {
+        "method": "POST",
+        "url": "{{gateway_base_url}}/api/identity-links",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company\": \"{{company}}\",\n  \"actor_directory_uuid\": \"{{actor_directory_uuid}}\",\n  \"source_user_id\": \"{{source_user_id}}\",\n  \"phone_number\": \"{{actor_phone}}\"\n}"
+        },
+        "description": "ERP shows returned whatsapp_message only to its authenticated user. That user sends it from the configured phone to OUR WhatsApp Business number. Do not put challenge codes in logs or shared screenshots."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Phone verification challenge created', function () {pm.response.to.have.status(201);});",
+              "if(pm.response.code===201) {const d=pm.response.json(); pm.expect(d.status).to.eql('pending_phone_verification');}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Check WhatsApp phone link status",
+      "request": {
+        "method": "GET",
+        "url": "{{gateway_base_url}}/api/identity-links/{{actor_directory_uuid}}?company={{company}}",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          }
+        ],
+        "description": "verified=true is phone-possession proof through OUR signed Meta webhook; ERP still owns user authentication and workflow permissions."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Scoped link status available', function () {pm.response.to.have.status(200);});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Revoke verified WhatsApp link (requires no pending approvals)",
+      "request": {
+        "method": "POST",
+        "url": "{{gateway_base_url}}/api/identity-links/{{actor_directory_uuid}}/revoke",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company\": \"{{company}}\",\n  \"source_user_id\": \"{{source_user_id}}\"\n}"
+        },
+        "description": "Destructive: only run after all pending approvals for the actor have been cancelled or resolved. Fresh LINK challenge from our WhatsApp number is required to relink."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Revocation confirms success', function () {pm.response.to.have.status(200);});",
+              "if(pm.response.code===200) {pm.expect(pm.response.json().status).to.eql('revoked');}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Create approval",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{gateway_base_url}}/api/approval-requests",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"source_system\": \"{{source_system}}\",\n  \"company\": \"{{company}}\",\n  \"request_type\": \"leave_approval\",\n  \"reference_id\": \"LEAVE-2026-001\",\n  \"step_id\": \"manager\",\n  \"workflow_version\": \"record-v1\",\n  \"actor_directory_uuid\": \"{{actor_directory_uuid}}\",\n  \"message\": \"Leave request requires review\",\n  \"idempotency_key\": \"ghrm-LEAVE-2026-001-manager-record-v1\",\n  \"payload\": {\n    \"employee_id\": \"7\",\n    \"leave_days\": 5\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Created or idempotent replay', function () {pm.expect([200,201]).to.include(pm.response.code);});",
+              "if ([200,201].includes(pm.response.code)) { const data = pm.response.json(); pm.expect(data).to.have.property('approval_request'); pm.environment.set('gateway_reference_id', data.approval_request.gateway_reference_id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get approval status",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          }
+        ],
+        "url": "{{gateway_base_url}}/api/approval-requests/{{gateway_reference_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status accessible', function () {pm.response.to.have.status(200);});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cancel pending approval (destructive to pending task)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{gateway_api_key}}"
+          }
+        ],
+        "url": "{{gateway_base_url}}/api/approval-requests/{{gateway_reference_id}}/cancel"
+      },
+      "description": "Only run intentionally: cancels an existing pending approval."
+    }
+  ]
+}

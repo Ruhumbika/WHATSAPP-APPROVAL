@@ -1,0 +1,138 @@
+"""Generic ERP deliveries must use our provider template, not PETA PDF fields."""
+import json
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from approval_gateway.config import load_settings
+from approval_gateway.whatsapp import WhatsAppClient
+from approval_gateway.worker import _send_delivery
+from approval_gateway.integrations.generic import GenericWorkflowGuard
+from approval_gateway.integrations.permissions import WorkflowActor
+from approval_gateway.integrations.registry import configure_workflow_guards
+from approval_gateway.db import connection, init_db
+from approval_gateway.upgrade import migrate
+from approval_gateway.repository import create_api_client
+from approval_gateway.service import create
+
+ACTOR = "0656c52c-970d-11f1-b365-6805cae19a58"
+
+
+class GenericWhatsAppTemplateTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.settings = replace(
+            load_settings(), app_env="testing",
+            database_path=str(Path(temp.name) / "db.sqlite3"),
+            log_path=str(Path(temp.name) / "gateway.log"),
+            whatsapp_template_name="workflow_approval_detail_document_v2",
+            dry_run_whatsapp=True,
+        )
+        init_db(self.settings)
+        migrate(self.settings)
+        self.guard = GenericWorkflowGuard("https://erp.example.com/verify", "x" * 40)
+        configure_workflow_guards({"ghrm": self.guard})
+        self.addCleanup(lambda: configure_workflow_guards({}))
+        with connection(self.settings) as conn:
+            create_api_client(conn, "ghrm", "ghrm-key")
+            conn.execute(
+                "INSERT INTO integrations VALUES (?,?,?)",
+                ("ghrm", "https://erp.example.com/callback", "s" * 32),
+            )
+            conn.execute(
+                "INSERT INTO integration_company_scopes VALUES (?,?)",
+                ("ghrm", "14"),
+            )
+        from approval_gateway.identity_link import start, receive
+        challenge = start(self.settings, "ghrm-key", {
+            "company": "14", "actor_directory_uuid": ACTOR,
+            "source_user_id": "7", "phone_number": "255700000001",
+        })
+        linked = receive(self.settings, {
+            "action": "conversation", "text": challenge["whatsapp_message"],
+            "phone": "255700000001", "message_id": "wamid.fixture.ghrm",
+        })
+        self.assertTrue(linked["processed"])
+
+    def test_generic_template_does_not_require_peta_pdf(self):
+        client = WhatsAppClient(self.settings)
+        with self.assertRaises(ValueError):
+            client.send_approval_request(
+                "255700000001", "14", "Review leave", "AGR-AABBCC", {}
+            )
+        result = client.send_approval_request(
+            "255700000001", "14", "Review leave", "AGR-AABBCC",
+            {}, template_name="approval_request",
+        )
+        self.assertEqual(result, "dry-run-AGR-AABBCC")
+
+    def test_provider_owned_meta_template_payload_has_two_buttons(self):
+        settings = replace(self.settings, dry_run_whatsapp=False)
+        client = WhatsAppClient(settings)
+        captured = {}
+
+        def fake_post_graph(payload, **kwargs):
+            captured.update(payload)
+            return {"messages": [{"id": "wamid.provider.whatsapp"}]}
+
+        with patch.object(client, "_post_graph", side_effect=fake_post_graph):
+            result = client.send_approval_request(
+                "255700000001", "14", "Review leave",
+                "AGR-ABCD1234", {},
+                template_name="approval_request",
+            )
+        self.assertEqual(result, "wamid.provider.whatsapp")
+        self.assertEqual(captured["messaging_product"], "whatsapp")
+        self.assertEqual(captured["to"], "255700000001")
+        self.assertEqual(captured["template"]["name"], "approval_request")
+        body = next(x for x in captured["template"]["components"] if x["type"] == "body")
+        self.assertEqual(
+            [x["text"] for x in body["parameters"]],
+            ["14", "Review leave"],
+        )
+        buttons = [x for x in captured["template"]["components"] if x["type"] == "button"]
+        self.assertEqual(
+            [x["parameters"][0]["payload"] for x in buttons],
+            ["approve_AGR-ABCD1234", "reject_AGR-ABCD1234"],
+        )
+
+    def test_worker_selects_generic_template(self):
+        actor = WorkflowActor(
+            directory_uuid=ACTOR, source_user_id="7",
+            phone_number="255700000001", module_id="leave",
+            step_id="manager", record_digest="v1",
+        )
+        with patch.object(self.guard, "authorize", return_value=actor):
+            task, created = create(self.settings, "ghrm-key", {
+                "source_system": "ghrm", "company": "14",
+                "request_type": "leave_approval", "reference_id": "LEAVE-1",
+                "step_id": "manager", "workflow_version": "v1",
+                "actor_directory_uuid": ACTOR, "message": "Review leave",
+                "payload": {"employee_id": "7"},
+            })
+            claimed = dict(task, delivery_attempts=1, delivery_status="sending")
+            with connection(self.settings) as conn:
+                conn.execute(
+                    "UPDATE approval_requests SET delivery_status='sending',"
+                    "delivery_attempts=1 WHERE id=?", (task["id"],)
+                )
+            mock_client = Mock()
+            mock_client.send_approval_request.return_value = "wamid.success"
+            _send_delivery(self.settings, mock_client, claimed)
+        self.assertEqual(
+            mock_client.send_approval_request.call_args.kwargs["template_name"],
+            "approval_request",
+        )
+        with connection(self.settings) as conn:
+            state = conn.execute(
+                "SELECT delivery_status FROM approval_requests WHERE id=?",
+                (task["id"],),
+            ).fetchone()[0]
+            self.assertEqual(state, "simulated")
+
+
+if __name__ == "__main__":
+    unittest.main()

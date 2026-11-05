@@ -1,6 +1,6 @@
 # v2.1 — PDF requisition approvals
 
-Read DOCUMENT_APPROVAL_SETUP.md for upgrade, template and testing instructions.
+PETA document template, PDF upload and ERP integration instructions are consolidated in [the ERP Integration Developer Guide](docs/integration/README.md).
 
 # WhatsApp Approval Gateway v2
 
@@ -143,3 +143,24 @@ Send `actor_directory_uuid` in POST /api/approval-requests alongside company, re
 For the submitted English template set WHATSAPP_TEMPLATE_NAME=workflow_approval_document and provide payload.document_media_id, document_filename, reference_id, workflow_step, requested_by, details, decision_scope. Six body parameters follow exactly this order: company, reference, workflow step, requested by, details, decision scope. Existing document template remains supported.
 
 Implemented here: explicit actor bindings, separate system/company scope, actor evidence callbacks, template mapping. Existing signed callback retries and idempotent intake retained. Not implemented: the proposed complete v1 contract, public identity verification endpoints, Directory permission adapter, or PETA transactional execution callback. No live VPS or WhatsApp configuration has been modified.
+
+
+## Experimental universal ERP onboarding (development branch only)
+
+The opt-in `generic:build_adapter` supports any external ERP with one HTTPS
+workflow verification endpoint; no ERP-specific Python adapter is required.
+It revalidates the actor, company, step and current record at task creation,
+before delivery and before processing a decision. The existing PETA adapter
+and API routes are unchanged.
+
+For ERP integration, use the single [ERP Integration Developer Guide](docs/integration/README.md). It consolidates API endpoints, onboarding, callbacks, identity linking, sandbox testing and PETA-specific integration details.
+for the exact current gateway endpoints, verification response, callback
+signature and execution acknowledgment. Start with the disabled
+`generic_example` in `config/integrations.example.json`. Operators can
+use `python3 -m approval_gateway.provision_erp` to create a new API client
+and registered callback credentials without overwriting an existing client.
+
+**Not production-ready self-service:** credential provisioning still requires
+an operator; independently verified WhatsApp phone ownership, tenant-company
+scopes, key lifecycle, and external live end-to-end acceptance must be
+completed before publishing this as a plug-and-play integration.

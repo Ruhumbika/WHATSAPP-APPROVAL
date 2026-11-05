@@ -59,6 +59,100 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS integration_company_scopes (
+        system_name TEXT NOT NULL REFERENCES api_clients(system_name),
+        company TEXT NOT NULL,
+        PRIMARY KEY (system_name, company)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS integration_callback_secret_staging (
+        system_name TEXT PRIMARY KEY REFERENCES integrations(system_name),
+        next_secret TEXT NOT NULL,
+        staged_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS integration_callback_secret_events (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL REFERENCES integrations(system_name),
+        event_type TEXT NOT NULL CHECK (
+            event_type IN ('secret_staged','secret_activated','secret_aborted')
+        ),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS integration_webhook_events (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL REFERENCES api_clients(system_name),
+        previous_url TEXT NOT NULL,
+        new_url TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK(event_type='callback_url_updated'),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS api_client_key_overlaps (
+        system_name TEXT PRIMARY KEY REFERENCES api_clients(system_name),
+        previous_key_hash TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS integration_credential_events (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL REFERENCES api_clients(system_name),
+        event_type TEXT NOT NULL CHECK(
+            event_type IN ('api_key_rotated', 'client_revoked', 'api_key_overlap_finished')
+        ),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_integration_credential_events_system
+        ON integration_credential_events(system_name, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS identity_link_challenges (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL REFERENCES api_clients(system_name),
+        company TEXT NOT NULL,
+        directory_uuid TEXT NOT NULL,
+        source_user_id TEXT NOT NULL,
+        phone_number TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        verified_at TEXT,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_identity_link_scope
+        ON identity_link_challenges(system_name,company,directory_uuid)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS identity_link_events (
+        id INTEGER PRIMARY KEY,
+        system_name TEXT NOT NULL,
+        company TEXT NOT NULL,
+        directory_uuid TEXT NOT NULL,
+        source_user_id TEXT NOT NULL,
+        approver_id INTEGER,
+        phone_number TEXT,
+        event_type TEXT NOT NULL CHECK (
+            event_type IN ('linked', 'revoked', 'relinked')
+        ),
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_identity_link_events_scope
+        ON identity_link_events(system_name,company,directory_uuid,id)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS actor_bindings (
         id INTEGER PRIMARY KEY,
         system_name TEXT NOT NULL
@@ -198,6 +292,16 @@ def migrate(settings: Settings) -> None:
         # Execute individually to preserve the surrounding transaction.
         for statement in _SCHEMA_STATEMENTS:
             conn.execute(statement)
+
+        # Older installations may already have the challenge table; track
+        # successful phone proof separately from cancelled/invalidated codes.
+        link_columns = {row["name"] for row in conn.execute(
+            "PRAGMA table_info(identity_link_challenges)"
+        )}
+        if "verified_at" not in link_columns:
+            conn.execute(
+                "ALTER TABLE identity_link_challenges ADD COLUMN verified_at TEXT"
+            )
 
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(decision_repeat_notifications)")}
         if "payload_json" not in columns:

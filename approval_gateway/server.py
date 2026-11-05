@@ -218,7 +218,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 from .inbox import handle_inbox
                 from .chat_menu import handle as handle_menu
                 from .rejection_flow import handle as handle_flow
-                result = handle_flow(settings, response)
+                from .identity_link import receive as receive_identity_link
+                result = receive_identity_link(settings, response)
+                if result is None:
+                    result = handle_flow(settings, response)
                 if result is None:
                     result = handle_menu(settings, response)
                 if result is None:
@@ -285,6 +288,41 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 data,
             )
             self.reply(result, 202 if created else 200)
+            return
+        if path == "/api/integration-status":
+            if method != "GET":
+                raise ServiceError("Method not allowed.", 405)
+            from .integration_readiness import read_erp_status
+            self.reply(read_erp_status(self.settings, self.key()))
+            return
+        if path == "/api/identity-links":
+            if method != "POST":
+                raise ServiceError("Method not allowed.", 405)
+            from .identity_link import start
+            result = start(self.settings, self.key(), self.parse_json(self.body()))
+            self.reply(result, 201)
+            return
+        if path.startswith("/api/identity-links/") and path.endswith("/revoke"):
+            if method != "POST":
+                raise ServiceError("Method not allowed.", 405)
+            from .identity_link import revoke
+            identity = path[len("/api/identity-links/"):-len("/revoke")]
+            if not identity or "/" in identity:
+                raise ServiceError("Invalid identity path.", 404)
+            self.reply(
+                revoke(self.settings, self.key(), identity, self.parse_json(self.body()))
+            )
+            return
+        if path.startswith("/api/identity-links/"):
+            if method != "GET":
+                raise ServiceError("Method not allowed.", 405)
+            from urllib.parse import parse_qs
+            from .identity_link import status
+            identity = path[len("/api/identity-links/"):]
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            if set(query) != {"company"} or len(query["company"]) != 1:
+                raise ServiceError("One company query parameter is required.", 400)
+            self.reply(status(self.settings, self.key(), identity, query["company"][0]))
             return
         if path == "/api/approval-requests":
             if method != "POST":

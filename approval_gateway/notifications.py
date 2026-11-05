@@ -34,6 +34,19 @@ def _company_name(task: dict[str, Any]) -> str:
     return company
 
 
+def _source_display(task: dict[str, Any]) -> tuple[str, str]:
+    """ERP-neutral labels; PETA keeps legacy wording."""
+    system = task.get("source_system", "")
+    if system == "peta":
+        return "PETA", ("Payment Advice" if task.get("request_type") == "payment_advice_approval" else "requisition")
+    source = "".join(c for c in str(system or "ERP") if c.isascii() and (c.isalnum() or c in "_-"))[:40].upper() or "ERP"
+    kind = str(task.get("request_type") or "approval")
+    if kind.endswith("_approval"):
+        kind = kind[:-len("_approval")]
+    kind = " ".join("".join(c if c.isascii() and (c.isalnum() or c in "_-") else " " for c in kind[:60]).replace("_", " ").split())
+    return source, (kind or "approval") + " request"
+
+
 def enqueue_notification(
     conn: sqlite3.Connection,
     task: dict[str, Any],
@@ -61,6 +74,27 @@ def enqueue_notification(
         if task.get("request_type") == "payment_advice_approval"
         else "requisition"
     )
+    if task.get("source_system") != "peta":
+        source, item = _source_display(task)
+        verb = "approve" if action == "approved" else "reject"
+        if kind == "received":
+            body = f"{company}\\nYour decision to {verb} {item} {reference} was recorded. Waiting for {source} confirmation."
+        elif kind == "result" and task.get("execution_status") == "applied":
+            body = f"{company}\\n{source} confirmed your decision to {verb} {item} {reference} was applied."
+        elif kind == "result" and task.get("execution_status") == "rejected":
+            body = f"{company}\\n{source} did not apply the decision for {item} {reference}. Review it in {source}."
+        elif kind == "result":
+            return
+        else:
+            raise ValueError("Invalid notification kind")
+        conn.execute(
+            """INSERT INTO decision_notifications
+               (approval_request_id,kind,phone,body,next_attempt_at,expires_at,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(approval_request_id,kind) DO NOTHING""",
+            (task["id"], kind, task["actor_phone"], body, now, expires, now, now),
+        )
+        return
     rejection = json.loads(task.get("decision_rejection_json") or "null")
     verb = "approve" if action == "approved" else "reject"
     if action == "rejected" and rejection:
@@ -108,7 +142,8 @@ def enqueue_execution_failure(conn, task, now):
     expires = (datetime.fromisoformat(task['responded_at']) + timedelta(hours=23, minutes=55)).isoformat()
     if expires <= now:
         return
-    body = (f"{_company_name(task)}\nCould not confirm your decision for request {task['source_reference_id']} with PETA. "
+    source = "PETA" if task.get("source_system") == "peta" else _source_display(task)[0]
+    body = (f"{_company_name(task)}\\nCould not confirm your decision for request {task['source_reference_id']} with {source}. "
             "Contact support to check its status before taking another action.")
     conn.execute("""INSERT INTO decision_repeat_notifications
         (approval_request_id,inbound_message_id,kind,phone,body,next_attempt_at,expires_at,created_at,updated_at)
@@ -125,6 +160,27 @@ def enqueue_repeat_notification(conn, task, response, now):
         if task.get("request_type") == "payment_advice_approval"
         else "requisition"
     )
+    if task.get("source_system") != "peta":
+        source, item = _source_display(task)
+        attempt = "approve" if response["action"] == "approved" else "reject"
+        original = "approve" if task["status"] == "approved" else "reject"
+        if task["execution_status"] == "applied":
+            state = f"Your earlier {original} decision has already been applied."
+        elif task["execution_status"] == "pending":
+            state = f"Your earlier {original} decision is recorded; waiting for {source} confirmation."
+        else:
+            state = f"Your earlier {original} decision was recorded but not applied."
+        body = f"{company}\\nCannot {attempt} {item} {task['source_reference_id']} again. {state}"
+        expires = (datetime.fromisoformat(now) + timedelta(hours=23, minutes=55)).isoformat()
+        conn.execute(
+            """INSERT INTO decision_repeat_notifications
+               (approval_request_id,inbound_message_id,kind,phone,body,
+                next_attempt_at,expires_at,created_at,updated_at)
+               VALUES (?,?,'received',?,?,?,?,?,?)
+               ON CONFLICT(inbound_message_id) DO NOTHING""",
+            (task["id"], response["message_id"], task["actor_phone"], body, now, expires, now, now),
+        )
+        return
     first = "approve" if task["status"] == "approved" else "reject"
     attempted = "approve" if response["action"] == "approved" else "reject"
     prefix = f"{company}\nYou cannot {attempted} requisition {task['source_reference_id']}"

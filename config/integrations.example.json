@@ -12,6 +12,14 @@
         "directory_service_id_env": "PETA_DIRECTORY_SERVICE_ID",
         "directory_shared_user_ids": true
       }
+    },
+    "generic_example": {
+      "enabled": false,
+      "factory": "generic:build_adapter",
+      "options": {
+        "verify_url": "https://erp.example.com/api/whatsapp-approvals/verify",
+        "verify_token_env": "GENERIC_ERP_VERIFY_TOKEN"
+      }
     }
   }
 }

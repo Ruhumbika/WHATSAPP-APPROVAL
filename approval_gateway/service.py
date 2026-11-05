@@ -111,6 +111,28 @@ def get_client(
     return client
 
 
+def _check_company_scope(conn: sqlite3.Connection, system: str, company: str) -> None:
+    """Fail closed for generic ERPs; preserve unscoped legacy adapters."""
+    from .integrations.generic import GenericWorkflowGuard
+
+    try:
+        generic = isinstance(get_workflow_guard(system), GenericWorkflowGuard)
+    except IntegrationUnavailable:
+        # Preserve the original API error mapping in _authorize_workflow().
+        return
+    configured = conn.execute(
+        "SELECT 1 FROM integration_company_scopes WHERE system_name=? LIMIT 1",
+        (system,),
+    ).fetchone()
+    if generic and configured is None:
+        raise ServiceError("Generic ERP has no provisioned company scopes.", 403)
+    if configured is not None and conn.execute(
+        "SELECT 1 FROM integration_company_scopes WHERE system_name=? AND company=?",
+        (system, company),
+    ).fetchone() is None:
+        raise ServiceError("Company is not permitted for this integration.", 403)
+
+
 def _validate_request(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ServiceError("JSON object required.")
@@ -155,6 +177,14 @@ def _validate_request(data: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ServiceError("payload must be an object.")
 
+    # Approval-specific options are authoritative ERP policy, not a WhatsApp
+    # user preference. Reject malformed values instead of silently ignoring.
+    if "approval_options" in payload:
+        options = payload["approval_options"]
+        if (not isinstance(options, dict)
+                or set(options) != {"rejection_reason_required"}
+                or type(options["rejection_reason_required"]) is not bool):
+            raise ServiceError("Invalid approval_options in payload.")
     # Detach the snapshot from mutable caller-owned objects.
     result["payload"] = json.loads(_json(payload))
     if data.get("amount") is not None:
@@ -292,6 +322,7 @@ def _preflight_decision(
         "company": task["company"],
         "request_type": task["request_type"],
         "step_id": task["step_id"],
+        "workflow_version": task["workflow_version"],
         "actor_directory_uuid": task["actor_directory_uuid"],
         "payload": json.loads(task["payload_json"]),
     }
@@ -322,6 +353,11 @@ def _prepare_task(
     if "_gateway_workflow" in data["payload"]:
         raise ServiceError("payload._gateway_workflow is reserved.")
     actor = _authorize_workflow(system, data)
+    # A generic ERP's version must describe exactly the snapshot it verifies.
+    from .integrations.generic import GenericWorkflowGuard
+    if isinstance(get_workflow_guard(system), GenericWorkflowGuard):
+        if actor.record_digest != data["workflow_version"]:
+            raise ServiceError("ERP workflow digest and version differ.", 409)
     data["payload"]["_gateway_workflow"] = _workflow_evidence(actor)
     return data, actor
 
@@ -342,6 +378,27 @@ def _provision_verified_actor(
     ).fetchone()
 
     phone = _phone(actor.phone_number)
+
+    # An ERP assertion alone does not prove WhatsApp phone ownership.
+    # Generic integrations require a separately enrolled, active actor binding.
+    from .integrations.generic import GenericWorkflowGuard
+    if isinstance(get_workflow_guard(system), GenericWorkflowGuard):
+        binding, approver = _assigned_actor(conn, system, company, actor.directory_uuid)
+        if approver["company"] not in {company, "all"}:
+            raise ServiceError("Approver company scope mismatch.", 403)
+        if binding["source_user_id"] != actor.source_user_id:
+            raise ServiceError("ERP source user differs from verified binding.", 403)
+        if _phone(approver["phone_number"]) != phone:
+            raise ServiceError("ERP phone differs from verified binding.", 403)
+        from .identity_verification import has_current_phone_proof
+        if not has_current_phone_proof(
+            conn, system, company, actor.directory_uuid,
+            actor.source_user_id, approver["id"], phone,
+        ):
+            raise ServiceError(
+                "WhatsApp phone proof is missing, revoked or no longer current.", 403
+            )
+        return binding, approver
 
     if existing is not None:
         binding, approver = _assigned_actor(
@@ -630,11 +687,14 @@ def create(
     # Public task creation always authenticates with an API key.
     with connection(settings) as conn:
         system = get_client(conn, key)["system_name"]
+        if isinstance(data, dict):
+            _check_company_scope(conn, system, _text(data.get("company"), "company"))
     prepared, actor = _prepare_task(system, data)
     with connection(settings) as conn:
         conn.execute("BEGIN IMMEDIATE")
         if get_client(conn, key)["system_name"] != system:
             raise ServiceError("API client changed during verification.", 409)
+        _check_company_scope(conn, system, prepared["company"])
         return _persist_task(conn, settings, system, prepared, actor)
 
 
@@ -816,7 +876,9 @@ def verify_delivery_workflow(settings: Settings, task: dict[str, Any]) -> None:
         "company": task["company"],
         "request_type": task["request_type"],
         "step_id": task["step_id"],
+        "workflow_version": task["workflow_version"],
         "actor_directory_uuid": task["actor_directory_uuid"],
+        "payload": json.loads(task["payload_json"]),
     }
     actor = _authorize_workflow(task["source_system"], data)
     if (
@@ -908,6 +970,11 @@ def _check_actor(
     ).fetchone()
     if client is None:
         raise ServiceError("Source system disabled.", 403)
+
+
+def _requires_rejection_reason(request: dict[str, Any]) -> bool:
+    from .rejection import requires_reason
+    return requires_reason(request)
 
 
 def _callback_payload(
@@ -1055,7 +1122,7 @@ def _commit_decision(
         if request["status"] != "pending":
             enqueue_repeat_notification(conn, request, response, now)
             return {"processed": False, "reason": request["status"]}
-        if response["action"] == "rejected" and request["request_type"] in {"requisition_approval", "payment_advice_approval"}:
+        if response["action"] == "rejected" and _requires_rejection_reason(request):
             from .rejection import consume_reason
             consume_reason(conn, request, response, now)
         else:
@@ -1191,6 +1258,7 @@ def read_request(
         conn.execute("BEGIN")
         client = get_client(conn, key)
         request = _owned_request(conn, client["system_name"], reference)
+        _check_company_scope(conn, client["system_name"], request["company"])
         request["audit"] = [
             dict(row)
             for row in conn.execute(
@@ -1220,6 +1288,7 @@ def cancel(
         conn.execute("BEGIN IMMEDIATE")
         client = get_client(conn, key)
         request = _owned_request(conn, client["system_name"], reference)
+        _check_company_scope(conn, client["system_name"], request["company"])
         if request["status"] != "pending":
             raise ServiceError("Only pending tasks can be cancelled.", 409)
         if _expired(request["expires_at"]):
