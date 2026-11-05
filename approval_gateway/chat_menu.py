@@ -168,8 +168,12 @@ def verified_task(settings, phone, reference):
 
 
 def task_label(task):
-    prefix = 'REQ' if task['request_type'] == 'requisition_approval' else 'PA'
     reference = task['source_reference_id']
+    if task['source_system'] != 'peta':
+        kind = task['request_type'].removesuffix('_approval').replace('_', ' ').strip()
+        label = kind.title()[:60] if kind else 'Approval'
+        return f'{label} {reference}'
+    prefix = 'REQ' if task['request_type'] == 'requisition_approval' else 'PA'
     return reference if reference.upper().startswith(prefix) else f'{prefix} {reference}'
 
 
