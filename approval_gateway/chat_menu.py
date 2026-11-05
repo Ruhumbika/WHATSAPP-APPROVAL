@@ -181,7 +181,10 @@ def task_summary(task):
     from .inbox import clean
     payload = json.loads(task['payload_json'])
     snapshot = payload.get('record_snapshot') or {}
-    purpose = payload.get('details') or snapshot.get('remarks') or 'See request PDF'
+    purpose = (payload.get('details') or snapshot.get('remarks')
+               or (task['message'] if 'message' in task.keys() else None)
+               or ('See request PDF' if task['source_system'] == 'peta'
+                   else 'See details in your ERP'))
     amount = payload.get('total_display') or snapshot.get('total_display') or payload.get('amount')
     if not amount and snapshot.get('items'):
         try:
@@ -190,7 +193,8 @@ def task_summary(task):
         except (ValueError, KeyError, TypeError, IntegrationUnavailable):
             pass
     mode = {'correction': 'Return for correction', 'final': 'Reject completely'}.get(task['rejection_mode'], 'Not chosen yet')
-    return f"*{task_label(task)}*\n{clean(purpose, 120)}\nAmount: {clean(amount, 100) or 'See request PDF'}\nRejection type: {mode}"
+    amount_label = clean(amount, 100) or ('See request PDF' if task['source_system'] == 'peta' else 'Not provided')
+    return f"*{task_label(task)}*\n{clean(purpose, 120)}\nAmount: {amount_label}\nRejection type: {mode}"
 
 def prepare(settings, job, command):
     name, phone = command['ui'], job['phone']
