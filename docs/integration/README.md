@@ -216,6 +216,22 @@ Return `execution_status: "rejected"` with the **same event ID** if the ERP defi
 
 See the [working ERP receiver example](examples/python/mock_erp_server.py) and [HMAC verification reference](examples/python/verify_gateway_webhook.py).
 
+### Optional: Require a rejection reason
+
+Your ERP may opt into the gateway's existing two-choice rejection review conversation **per approval request**. Add this field inside the request's `payload`:
+
+```json
+{
+  "approval_options": {
+    "rejection_reason_required": true
+  }
+}
+```
+
+On Reject, the gateway **does not immediately execute the decision**. It asks the verified reviewer to select **Return for correction** or **Reject completely**, enter a reason and confirm it. The final signed ERP callback includes the `rejection` object with `mode` and `reason`. The ERP must interpret the mode and enforce its own business rules. Keep `approval_options` within the ERP-authorized immutable workflow snapshot.
+
+Without this option, generic approvals use the standard immediate Approve/Reject flow. Existing PETA Requisition and Payment Advice rejection behavior remains unchanged.
+
 ## Manage approvals
 
 All these requests require `Authorization: Bearer <GATEWAY_API_KEY>`.
